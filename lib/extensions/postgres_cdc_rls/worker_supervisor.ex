@@ -2,33 +2,30 @@ defmodule Extensions.PostgresCdcRls.WorkerSupervisor do
   @moduledoc false
   use Supervisor
 
-  alias Extensions.PostgresCdcRls, as: Rls
+  alias Extensions.PostgresCdcRls
 
-  alias Rls.{
-    Migrations,
+  alias PostgresCdcRls.{
     ReplicationPoller,
     SubscriptionManager,
     SubscriptionsChecker
   }
 
+  alias Realtime.Api
+  alias Realtime.PostgresCdc.Exception
+
   def start_link(args) do
-    name = Rls.supervisor_id(args["id"], args["region"])
+    name = PostgresCdcRls.supervisor_id(args["id"], args["region"])
     Supervisor.start_link(__MODULE__, args, name: {:via, :syn, name})
   end
 
   @impl true
-  def init(args) do
-    tid_args =
-      Map.merge(args, %{
-        "subscribers_tid" => :ets.new(__MODULE__, [:public, :bag])
-      })
+  def init(%{"id" => tenant} = args) when is_binary(tenant) do
+    Logger.metadata(external_id: tenant, project: tenant)
+    unless Api.get_tenant_by_external_id(tenant, :primary), do: raise(Exception)
+
+    tid_args = Map.merge(args, %{"subscribers_tid" => :ets.new(__MODULE__, [:public, :bag])})
 
     children = [
-      %{
-        id: Migrations,
-        start: {Migrations, :start_link, [args]},
-        restart: :transient
-      },
       %{
         id: ReplicationPoller,
         start: {ReplicationPoller, :start_link, [args]},
@@ -46,6 +43,6 @@ defmodule Extensions.PostgresCdcRls.WorkerSupervisor do
       }
     ]
 
-    Supervisor.init(children, strategy: :one_for_all, max_restarts: 10, max_seconds: 60)
+    Supervisor.init(children, strategy: :rest_for_one, max_restarts: 10, max_seconds: 60)
   end
 end

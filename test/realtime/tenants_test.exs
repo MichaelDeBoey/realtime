@@ -3,47 +3,11 @@ defmodule Realtime.TenantsTest do
 
   import Mock
 
-  alias Realtime.Api
   alias Realtime.GenCounter
   alias Realtime.Tenants
+  doctest Realtime.Tenants
 
   describe "tenants" do
-    db_conf = Application.compile_env(:realtime, Realtime.Repo)
-
-    @valid_attrs %{
-      external_id: "external_id",
-      name: "localhost",
-      extensions: [
-        %{
-          "type" => "postgres_cdc_rls",
-          "settings" => %{
-            "db_host" => db_conf[:hostname],
-            "db_name" => db_conf[:database],
-            "db_user" => db_conf[:username],
-            "db_password" => db_conf[:password],
-            "db_port" => "5432",
-            "poll_interval" => 100,
-            "poll_max_changes" => 100,
-            "poll_max_record_bytes" => 1_048_576,
-            "region" => "us-east-1"
-          }
-        }
-      ],
-      postgres_cdc_default: "postgres_cdc_rls",
-      jwt_secret: "new secret",
-      max_concurrent_users: 200,
-      max_events_per_second: 100
-    }
-
-    def tenant_fixture(attrs \\ %{}) do
-      {:ok, tenant} =
-        attrs
-        |> Enum.into(@valid_attrs)
-        |> Api.create_tenant()
-
-      tenant
-    end
-
     test "get_tenant_limits/1" do
       tenant = tenant_fixture()
 
@@ -73,6 +37,53 @@ defmodule Realtime.TenantsTest do
 
         assert tenant_events.counter == 9
       end
+    end
+  end
+
+  describe "suspend_tenant_by_external_id/1" do
+    setup do
+      tenant = tenant_fixture()
+      topic = "realtime:operations:invalidate_cache"
+      Phoenix.PubSub.subscribe(Realtime.PubSub, topic)
+      %{topic: topic, tenant: tenant}
+    end
+
+    test "sets suspend flag to true and publishes message", %{tenant: %{external_id: external_id}} do
+      tenant = Tenants.suspend_tenant_by_external_id(external_id)
+      assert tenant.suspend == true
+      assert_receive {:suspend_tenant, ^external_id}, 1000
+    end
+  end
+
+  describe "unsuspend_tenant_by_external_id/1" do
+    setup do
+      tenant = tenant_fixture()
+      topic = "realtime:operations:invalidate_cache"
+      Phoenix.PubSub.subscribe(Realtime.PubSub, topic)
+      %{topic: topic, tenant: tenant}
+    end
+
+    test "sets suspend flag to false and publishes message" do
+      %{external_id: external_id} = tenant_fixture(suspend: true)
+      tenant = Tenants.unsuspend_tenant_by_external_id(external_id)
+      assert tenant.suspend == false
+      assert_receive {:unsuspend_tenant, ^external_id}, 1000
+    end
+  end
+
+  describe "update_management/2" do
+    setup do
+      tenant = tenant_fixture()
+      topic = "realtime:operations:invalidate_cache"
+      Phoenix.PubSub.subscribe(Realtime.PubSub, topic)
+      %{topic: topic, tenant: tenant}
+    end
+
+    test "sets private_only flag to true and invalidates cache" do
+      %{external_id: external_id} = tenant_fixture(%{private_only: false})
+      tenant = Tenants.update_management(external_id, %{private_only: true})
+      assert tenant.private_only
+      assert Tenants.Cache.get_tenant_by_external_id(external_id).private_only
     end
   end
 end

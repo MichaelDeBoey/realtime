@@ -30,7 +30,7 @@ defmodule Realtime.Extensions.CdcRlsTest do
       limits: %{
         max_concurrent_users: 1,
         max_events_per_second: 100,
-        max_joins_per_second: 500,
+        max_joins_per_second: 100,
         max_channels_per_client: 100,
         max_bytes_per_second: 100_000
       },
@@ -41,7 +41,7 @@ defmodule Realtime.Extensions.CdcRlsTest do
     with_mocks([
       {ChannelsAuthorization, [],
        [
-         authorize_conn: fn _, _ ->
+         authorize_conn: fn _, _, _ ->
            {:ok, %{"exp" => Joken.current_time() + 1_000, "role" => "postgres"}}
          end
        ]}
@@ -85,7 +85,11 @@ defmodule Realtime.Extensions.CdcRlsTest do
         Enum.reduce_while(1..25, nil, fn _, acc ->
           case PostgresCdcRls.get_manager_conn(@external_id) do
             nil ->
-              Process.sleep(500)
+              Process.sleep(200)
+              {:cont, acc}
+
+            {:error, :wait} ->
+              Process.sleep(200)
               {:cont, acc}
 
             {:ok, pid, conn} ->
@@ -106,7 +110,7 @@ defmodule Realtime.Extensions.CdcRlsTest do
       assert !Map.equal?(oids2, oids3)
     end
 
-    test "Stop tenant supervisor" do
+    test "Stop tenant supervisor", %{tenant: tenant} do
       sup =
         Enum.reduce_while(1..10, nil, fn _, acc ->
           :syn.lookup(Extensions.PostgresCdcRls, @external_id)
@@ -121,7 +125,7 @@ defmodule Realtime.Extensions.CdcRlsTest do
         end)
 
       assert Process.alive?(sup)
-      PostgresCdc.stop(@cdc_module, @external_id)
+      PostgresCdc.stop(@cdc_module, tenant)
       assert Process.alive?(sup) == false
     end
   end

@@ -6,7 +6,13 @@ defmodule Realtime.Api do
 
   import Ecto.Query
 
-  alias Realtime.{Repo, Api.Tenant, Api.Extensions, RateCounter, GenCounter, Tenants}
+  alias Realtime.Repo
+  alias Realtime.Repo.Replica
+  alias Realtime.Api.Tenant
+  alias Realtime.Api.Extensions
+  alias Realtime.RateCounter
+  alias Realtime.GenCounter
+  alias Realtime.Tenants
 
   @doc """
   Returns the list of tenants.
@@ -18,7 +24,7 @@ defmodule Realtime.Api do
 
   """
   def list_tenants() do
-    repo_replica = Repo.replica()
+    repo_replica = Replica.replica()
 
     Tenant
     |> repo_replica.all()
@@ -33,7 +39,7 @@ defmodule Realtime.Api do
   * ordering (desc / asc)
   """
   def list_tenants(opts) when is_list(opts) do
-    repo_replica = Repo.replica()
+    repo_replica = Replica.replica()
 
     field = Keyword.get(opts, :order_by, "inserted_at") |> String.to_atom()
     external_id = Keyword.get(opts, :search)
@@ -71,7 +77,7 @@ defmodule Realtime.Api do
       ** (Ecto.NoResultsError)
 
   """
-  def get_tenant!(id), do: Repo.replica().get!(Tenant, id)
+  def get_tenant!(id), do: Replica.replica().get!(Tenant, id)
 
   @doc """
   Creates a tenant.
@@ -108,8 +114,20 @@ defmodule Realtime.Api do
   def update_tenant(%Tenant{} = tenant, attrs) do
     tenant
     |> Tenant.changeset(attrs)
+    |> tap(&maybe_trigger_disconnect/1)
     |> Repo.update()
   end
+
+  defp maybe_trigger_disconnect(%Ecto.Changeset{
+         changes: changes,
+         valid?: true,
+         data: %{external_id: external_id}
+       })
+       when is_map_key(changes, :jwt_jwks) or is_map_key(changes, :jwt_secret) do
+    Phoenix.PubSub.broadcast!(Realtime.PubSub, "realtime:operations:" <> external_id, :disconnect)
+  end
+
+  defp maybe_trigger_disconnect(_), do: nil
 
   @doc """
   Deletes a tenant.
@@ -153,13 +171,18 @@ defmodule Realtime.Api do
     Tenant.changeset(tenant, attrs)
   end
 
-  @spec get_tenant_by_external_id(String.t()) :: Tenant.t() | nil
-  def get_tenant_by_external_id(external_id) do
-    repo_replica = Repo.replica()
+  @spec get_tenant_by_external_id(String.t(), atom()) :: Tenant.t() | nil
+  def get_tenant_by_external_id(external_id, repo \\ :replica)
+      when repo in [:primary, :replica] do
+    repo =
+      case repo do
+        :primary -> Repo
+        :replica -> Replica.replica()
+      end
 
     Tenant
-    |> repo_replica.get_by(external_id: external_id)
-    |> repo_replica.preload(:extensions)
+    |> repo.get_by(external_id: external_id)
+    |> repo.preload(:extensions)
   end
 
   def list_extensions(type \\ "postgres_cdc_rls") do
@@ -167,7 +190,7 @@ defmodule Realtime.Api do
       where: e.type == ^type,
       select: e
     )
-    |> Repo.replica().all()
+    |> Replica.replica().all()
   end
 
   def rename_settings_field(from, to) do

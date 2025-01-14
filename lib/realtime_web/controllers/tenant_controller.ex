@@ -1,20 +1,28 @@
 defmodule RealtimeWeb.TenantController do
   use RealtimeWeb, :controller
   use OpenApiSpex.ControllerSpecs
-
   require Logger
+  import Realtime.Logs
 
   alias Realtime.Api
   alias Realtime.Api.Tenant
+  alias Realtime.Database
   alias Realtime.PostgresCdc
-  alias RealtimeWeb.{Endpoint, UserSocket}
+  alias Realtime.Tenants
+  alias Realtime.Tenants.Cache
+
+  alias RealtimeWeb.Endpoint
+  alias RealtimeWeb.UserSocket
 
   alias RealtimeWeb.OpenApiSchemas.{
     EmptyResponse,
+    ErrorResponse,
     NotFoundResponse,
+    TenantHealthResponse,
+    TenantParams,
     TenantResponse,
     TenantResponseList,
-    TenantParams
+    UnauthorizedResponse
   }
 
   @stop_timeout 10_000
@@ -169,23 +177,35 @@ defmodule RealtimeWeb.TenantController do
     ],
     responses: %{
       204 => EmptyResponse.response(),
-      403 => EmptyResponse.response()
+      403 => UnauthorizedResponse.response(),
+      500 => ErrorResponse.response()
     }
   )
 
-  def delete(conn, %{"tenant_id" => id}) do
-    Logger.metadata(external_id: id, project: id)
+  def delete(conn, %{"tenant_id" => tenant_id}) do
+    Logger.metadata(external_id: tenant_id, project: tenant_id)
 
-    case Api.delete_tenant_by_external_id(id) do
-      true ->
-        id |> UserSocket.subscribers_id() |> Endpoint.broadcast("disconnect", %{})
-        Task.async(fn -> PostgresCdc.stop_all(id) end)
+    stop_all_timeout = Enum.count(PostgresCdc.available_drivers()) * 1_000
 
-      false ->
-        Logger.error("Tenant #{id} does not exist")
+    subs_id = UserSocket.subscribers_id(tenant_id)
+
+    with %Tenant{} = tenant <- Api.get_tenant_by_external_id(tenant_id, :primary),
+         _ <- Realtime.Tenants.Connect.shutdown(tenant_id),
+         true <- Api.delete_tenant_by_external_id(tenant_id),
+         :ok <- Cache.distributed_invalidate_tenant_cache(tenant_id),
+         :ok <- PostgresCdc.stop_all(tenant, stop_all_timeout),
+         :ok <- Endpoint.broadcast(subs_id, "disconnect", %{}),
+         :ok <- Database.replication_slot_teardown(tenant) do
+      send_resp(conn, 204, "")
+    else
+      nil ->
+        log_error("TenantNotFound", "Tenant not found")
+        send_resp(conn, 204, "")
+
+      err ->
+        log_error("UnableToDeleteTenant", err)
+        conn |> put_status(500) |> json(err) |> halt()
     end
-
-    send_resp(conn, 204, "")
   end
 
   operation(:reload,
@@ -211,13 +231,68 @@ defmodule RealtimeWeb.TenantController do
   def reload(conn, %{"tenant_id" => tenant_id}) do
     Logger.metadata(external_id: tenant_id, project: tenant_id)
 
-    case Api.get_tenant_by_external_id(tenant_id) do
-      %Tenant{} ->
-        PostgresCdc.stop_all(tenant_id, @stop_timeout)
+    case Tenants.get_tenant_by_external_id(tenant_id) do
+      nil ->
+        log_error("TenantNotFound", "Tenant not found")
+
+        conn
+        |> put_status(404)
+        |> render("not_found.json", tenant: nil)
+
+      tenant ->
+        PostgresCdc.stop_all(tenant, @stop_timeout)
         send_resp(conn, 204, "")
+    end
+  end
+
+  operation(:health,
+    summary: "Tenant health",
+    parameters: [
+      token: [
+        in: :header,
+        name: "Authorization",
+        schema: %OpenApiSpex.Schema{type: :string},
+        required: true,
+        example:
+          "Bearer eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzI1NiJ9.eyJpYXQiOjE2ODAxNjIxNTR9.U9orU6YYqXAtpF8uAiw6MS553tm4XxRzxOhz2IwDhpY"
+      ],
+      tenant_id: [in: :path, description: "Tenant ID", type: :string]
+    ],
+    responses: %{
+      200 => TenantHealthResponse.response(),
+      403 => EmptyResponse.response(),
+      404 => NotFoundResponse.response()
+    }
+  )
+
+  def health(conn, %{"tenant_id" => tenant_id}) do
+    Logger.metadata(external_id: tenant_id, project: tenant_id)
+
+    case Tenants.health_check(tenant_id) do
+      {:ok, response} ->
+        json(conn, %{data: response})
+
+      {:error, %{healthy: false} = response} ->
+        json(conn, %{data: response})
+
+      {:error, :tenant_not_found} ->
+        log_error("TenantNotFound", "Tenant not found")
+
+        conn
+        |> put_status(404)
+        |> render("not_found.json", tenant: nil)
+    end
+  end
+
+  def patch(conn, %{"tenant_id" => tenant_id} = attrs) do
+    Logger.metadata(external_id: tenant_id, project: tenant_id)
+
+    case Tenants.update_management(tenant_id, attrs) do
+      %Tenant{} = tenant ->
+        render(conn, "show.json", tenant: tenant)
 
       nil ->
-        Logger.error("Atttempted to reload non-existant tenant #{tenant_id}")
+        log_error("TenantNotFound", "Tenant not found")
 
         conn
         |> put_status(404)

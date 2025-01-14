@@ -23,6 +23,8 @@ defmodule Realtime.DataCase do
       import Ecto.Changeset
       import Ecto.Query
       import Realtime.DataCase
+      import Generators
+      import TenantConnection
     end
   end
 
@@ -33,7 +35,7 @@ defmodule Realtime.DataCase do
       Sandbox.mode(Realtime.Repo, {:shared, self()})
     end
 
-    :ok
+    {:ok, conn: Phoenix.ConnTest.build_conn()}
   end
 
   @doc """

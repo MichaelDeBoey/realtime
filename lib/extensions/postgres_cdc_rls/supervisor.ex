@@ -4,7 +4,7 @@ defmodule Extensions.PostgresCdcRls.Supervisor do
   """
   use Supervisor
 
-  alias Extensions.PostgresCdcRls, as: Rls
+  alias Extensions.PostgresCdcRls
 
   @spec start_link :: :ignore | {:error, any} | {:ok, pid}
   def start_link() do
@@ -15,8 +15,7 @@ defmodule Extensions.PostgresCdcRls.Supervisor do
   def init(_args) do
     load_migrations_modules()
 
-    :syn.set_event_handler(Rls.SynHandler)
-    :syn.add_node_to_scopes([Rls])
+    :syn.add_node_to_scopes([PostgresCdcRls])
 
     children = [
       {
@@ -24,7 +23,7 @@ defmodule Extensions.PostgresCdcRls.Supervisor do
         partitions: 20,
         child_spec: DynamicSupervisor,
         strategy: :one_for_one,
-        name: Rls.DynamicSupervisor
+        name: PostgresCdcRls.DynamicSupervisor
       }
     ]
 
@@ -35,9 +34,7 @@ defmodule Extensions.PostgresCdcRls.Supervisor do
     {:ok, modules} = :application.get_key(:realtime, :modules)
 
     modules
-    |> Enum.filter(
-      &String.starts_with?(to_string(&1), "Elixir.Realtime.Extensions.Rls.Repo.Migrations")
-    )
+    |> Enum.filter(&String.starts_with?(to_string(&1), "Elixir.Realtime.Tenants.Migrations"))
     |> Enum.each(&Code.ensure_loaded!/1)
   end
 end

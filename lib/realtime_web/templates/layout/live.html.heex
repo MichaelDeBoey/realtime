@@ -82,8 +82,8 @@
 </header>
 <main class="px-4 py-24 sm:px-6 lg:px-8">
   <div class="mx-auto max-w-6xl">
-    <p class="alert alert-info" role="alert"><%= live_flash(@flash, :info) %></p>
-    <p class="alert alert-danger" role="alert"><%= live_flash(@flash, :error) %></p>
+    <p class="alert alert-info" role="alert"><%= Phoenix.Flash.get(@flash, :info) %></p>
+    <p class="alert alert-danger" role="alert"><%= Phoenix.Flash.get(@flash, :error) %></p>
 
     <%= @inner_content %>
   </div>
@@ -99,8 +99,10 @@
   </div>
   <ul class="flex flex-wrap items-center mt-3 text-sm text-gray-900">
     <li><span class="mr-4">Apache 2.0 License</span></li>
-    <li><span class="font-mono mr-4"><%= Realtime.Helpers.short_node_id() %></span></li>
-    <li><span class="font-mono mr-4"><%= System.get_env("FLY_REGION") %></span></li>
+    <li>
+      <span class="font-mono mr-4"><%= Realtime.Nodes.short_node_id_from_name(node()) %></span>
+    </li>
+    <li><span class="font-mono mr-4"><%= System.get_env("REGION") %></span></li>
     <li><%= live_render(@socket, RealtimeWeb.PingLive, id: "ping") %></li>
   </ul>
 </footer>

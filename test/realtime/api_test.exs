@@ -6,6 +6,7 @@ defmodule Realtime.ApiTest do
   alias Realtime.Api
   alias Realtime.Api.Extensions
   alias Realtime.Api.Tenant
+  alias Realtime.Crypto
   alias Realtime.GenCounter
   alias Realtime.RateCounter
 
@@ -22,7 +23,7 @@ defmodule Realtime.ApiTest do
           "db_name" => @db_conf[:database],
           "db_user" => @db_conf[:username],
           "db_password" => @db_conf[:password],
-          "db_port" => "5432",
+          "db_port" => "5433",
           "poll_interval" => 100,
           "poll_max_changes" => 100,
           "poll_max_record_bytes" => 1_048_576,
@@ -44,6 +45,9 @@ defmodule Realtime.ApiTest do
   @invalid_attrs %{external_id: nil, jwt_secret: nil, name: nil}
 
   setup do
+    start_supervised(Realtime.RateCounter.DynamicSupervisor)
+    start_supervised(Realtime.GenCounter.DynamicSupervisor)
+
     tenants = [
       tenant_fixture(%{external_id: "external_id1", max_concurrent_users: 10}),
       tenant_fixture(%{external_id: "external_id2", max_concurrent_users: 5}),
@@ -54,6 +58,11 @@ defmodule Realtime.ApiTest do
 
     dev_tenant = Api.list_tenants(search: "dev_tenant")
     tenants = tenants ++ dev_tenant
+
+    Enum.each(tenants, fn tenant ->
+      :ok =
+        Phoenix.PubSub.subscribe(Realtime.PubSub, "realtime:operations:" <> tenant.external_id)
+    end)
 
     %{tenants: tenants}
   end
@@ -104,17 +113,37 @@ defmodule Realtime.ApiTest do
     end
 
     test "update_tenant/2 with valid data updates the tenant", %{tenants: [tenant | _]} do
-      db_enc_key = Application.get_env(:realtime, :db_enc_key)
-
       assert {:ok, %Tenant{} = tenant} = Api.update_tenant(tenant, @update_attrs)
       assert tenant.external_id == "external_id1"
 
-      assert tenant.jwt_secret == Realtime.Helpers.encrypt!("some updated jwt_secret", db_enc_key)
+      assert tenant.jwt_secret == Crypto.encrypt!("some updated jwt_secret")
       assert tenant.name == "some updated name"
     end
 
     test "update_tenant/2 with invalid data returns error changeset", %{tenants: [tenant | _]} do
       assert {:error, %Ecto.Changeset{}} = Api.update_tenant(tenant, @invalid_attrs)
+    end
+
+    test "update_tenant/2 with valid data and jwks change will send disconnect event", %{
+      tenants: [tenant | _]
+    } do
+      assert {:ok, %Tenant{}} = Api.update_tenant(tenant, %{jwt_jwks: %{keys: ["test"]}})
+      assert_receive :disconnect
+    end
+
+    test "update_tenant/2 with valid data and jwt_secret change will send disconnect event", %{
+      tenants: [tenant | _]
+    } do
+      assert {:ok, %Tenant{}} = Api.update_tenant(tenant, %{jwt_secret: "potato"})
+      assert_receive :disconnect
+    end
+
+    test "update_tenant/2 with valid data but not updating jwt_secret or jwt_jwks won't send event",
+         %{
+           tenants: [tenant | _]
+         } do
+      assert {:ok, %Tenant{}} = Api.update_tenant(tenant, %{max_events_per_second: 100})
+      refute_receive :disconnect
     end
 
     test "delete_tenant/1 deletes the tenant", %{tenants: [tenant | _]} do
@@ -140,8 +169,8 @@ defmodule Realtime.ApiTest do
       assert Api.preload_counters(nil) == nil
 
       with_mocks([
-        {GenCounter, [], [get: fn _ -> {:ok, 1} end]},
-        {RateCounter, [], [get: fn _ -> {:ok, %RateCounter{avg: 2}} end]}
+        {GenCounter, [:passthrough], [get: fn _ -> {:ok, 1} end]},
+        {RateCounter, [:passthrough], [get: fn _ -> {:ok, %RateCounter{avg: 2}} end]}
       ]) do
         counters = Api.preload_counters(tenant)
         assert counters.events_per_second_rolling == 2
@@ -155,14 +184,5 @@ defmodule Realtime.ApiTest do
       Api.rename_settings_field("poll_interval_ms", "poll_interval")
       assert %{extensions: [%{settings: %{"poll_interval" => _}}]} = tenant
     end
-  end
-
-  defp tenant_fixture(attrs) do
-    {:ok, tenant} =
-      attrs
-      |> Enum.into(@valid_attrs)
-      |> Api.create_tenant()
-
-    tenant
   end
 end
