@@ -3,26 +3,28 @@ defmodule Realtime.SignalHandler do
   @behaviour :gen_event
   require Logger
 
-  @spec shutdown_in_progress? :: boolean()
+  @spec shutdown_in_progress? :: :ok | {:error, :shutdown_in_progress}
   def shutdown_in_progress? do
-    !!Application.get_env(:realtime, :shutdown_in_progress)
+    case !!Application.get_env(:realtime, :shutdown_in_progress) do
+      true -> {:error, :shutdown_in_progress}
+      false -> :ok
+    end
   end
 
   @impl true
-  def init(_) do
-    Logger.info("#{__MODULE__} is being initialized...")
-    {:ok, %{}}
+  def init({%{handler_mod: _} = args, :ok}) do
+    {:ok, args}
   end
 
   @impl true
-  def handle_event(signal, state) do
-    Logger.warn("#{__MODULE__}: #{inspect(signal)} received")
+  def handle_event(signal, %{handler_mod: handler_mod} = state) do
+    Logger.warning("#{__MODULE__}: #{inspect(signal)} received")
 
     if signal == :sigterm do
       Application.put_env(:realtime, :shutdown_in_progress, true)
     end
 
-    :erl_signal_handler.handle_event(signal, state)
+    handler_mod.handle_event(signal, state)
   end
 
   @impl true

@@ -4,10 +4,14 @@ defmodule Extensions.PostgresCdcRls.SubscriptionManager do
   """
   use GenServer
   require Logger
+  import Realtime.Logs
 
   alias Extensions.PostgresCdcRls, as: Rls
+
+  alias Realtime.Database
+  alias Realtime.Helpers
+
   alias Rls.Subscriptions
-  alias Realtime.Helpers, as: H
 
   @timeout 15_000
   @max_delete_records 1000
@@ -54,36 +58,34 @@ defmodule Extensions.PostgresCdcRls.SubscriptionManager do
 
   @impl true
   def init(args) do
-    %{
-      "id" => id,
-      "publication" => publication,
-      "subscribers_tid" => subscribers_tid,
-      "db_host" => host,
-      "db_port" => port,
-      "db_name" => name,
-      "db_user" => user,
-      "db_password" => pass,
-      "db_socket_opts" => socket_opts,
-      "subs_pool_size" => subs_pool_size
-    } = args
-
+    %{"id" => id} = args
     Logger.metadata(external_id: id, project: id)
+    {:ok, nil, {:continue, {:connect, args}}}
+  end
 
-    ssl_enforced = H.default_ssl_param(args)
+  @impl true
+  def handle_continue({:connect, args}, _) do
+    %{"id" => id, "publication" => publication, "subscribers_tid" => subscribers_tid} = args
 
-    {:ok, conn} = H.connect_db(host, port, name, user, pass, socket_opts, 1, 5_000, ssl_enforced)
+    subscription_manager_settings = Database.from_settings(args, "realtime_subscription_manager")
 
-    {:ok, conn_pub} =
-      H.connect_db(host, port, name, user, pass, socket_opts, subs_pool_size, 5_000, ssl_enforced)
+    subscription_manager_pub_settings =
+      Database.from_settings(args, "realtime_subscription_manager_pub")
 
+    {:ok, conn} = Database.connect_db(subscription_manager_settings)
+    {:ok, conn_pub} = Database.connect_db(subscription_manager_pub_settings)
     {:ok, _} = Subscriptions.maybe_delete_all(conn)
+
     Rls.update_meta(id, self(), conn_pub)
+
+    oids = Subscriptions.fetch_publication_tables(conn, publication)
 
     state = %State{
       id: id,
       conn: conn,
       publication: publication,
       subscribers_tid: subscribers_tid,
+      oids: oids,
       delete_queue: %{
         ref: check_delete_queue(),
         queue: :queue.new()
@@ -92,18 +94,14 @@ defmodule Extensions.PostgresCdcRls.SubscriptionManager do
     }
 
     send(self(), :check_oids)
-    {:ok, state}
+    {:noreply, state}
   end
 
   @impl true
   def handle_info({:subscribed, {pid, id}}, state) do
     case :ets.match(state.subscribers_tid, {pid, id, :"$1", :_}) do
-      [] ->
-        state.subscribers_tid
-        |> :ets.insert({pid, id, Process.monitor(pid), node(pid)})
-
-      _ ->
-        :ok
+      [] -> :ets.insert(state.subscribers_tid, {pid, id, Process.monitor(pid), node(pid)})
+      _ -> :ok
     end
 
     {:noreply, %{state | no_users_ts: nil}}
@@ -113,7 +111,7 @@ defmodule Extensions.PostgresCdcRls.SubscriptionManager do
         :check_oids,
         %State{check_oid_ref: ref, conn: conn, publication: publication, oids: old_oids} = state
       ) do
-    H.cancel_timer(ref)
+    Helpers.cancel_timer(ref)
 
     oids =
       case Subscriptions.fetch_publication_tables(conn, publication) do
@@ -148,7 +146,8 @@ defmodule Extensions.PostgresCdcRls.SubscriptionManager do
         values ->
           for {_pid, id, _ref, _node} <- values, reduce: q do
             acc ->
-              UUID.string_to_binary!(id)
+              id
+              |> UUID.string_to_binary!()
               |> :queue.in(acc)
           end
       end
@@ -157,11 +156,11 @@ defmodule Extensions.PostgresCdcRls.SubscriptionManager do
   end
 
   def handle_info(:check_delete_queue, %State{delete_queue: %{ref: ref, queue: q}} = state) do
-    H.cancel_timer(ref)
+    Helpers.cancel_timer(ref)
 
     q1 =
       if !:queue.is_empty(q) do
-        {ids, q1} = H.queue_take(q, @max_delete_records)
+        {ids, q1} = Helpers.queue_take(q, @max_delete_records)
         Logger.debug("delete sub id #{inspect(ids)}")
 
         case Subscriptions.delete_multi(state.conn, ids) do
@@ -169,25 +168,21 @@ defmodule Extensions.PostgresCdcRls.SubscriptionManager do
             q1
 
           {:error, reason} ->
-            Logger.error("delete subscriptions from the queue failed: #{inspect(reason)}")
+            log_error("SubscriptionDeletionFailed", reason)
+
             q
         end
       else
         q
       end
 
-    ref =
-      if :queue.is_empty(q1) do
-        check_delete_queue()
-      else
-        check_delete_queue(1_000)
-      end
+    ref = if :queue.is_empty(q1), do: check_delete_queue(), else: check_delete_queue(1_000)
 
     {:noreply, %{state | delete_queue: %{ref: ref, queue: q1}}}
   end
 
   def handle_info(:check_no_users, %{subscribers_tid: tid, no_users_ts: ts} = state) do
-    H.cancel_timer(state.no_users_ref)
+    Helpers.cancel_timer(state.no_users_ref)
 
     ts_new =
       case {:ets.info(tid, :size), ts != nil && ts + @stop_after < now()} do
@@ -207,37 +202,19 @@ defmodule Extensions.PostgresCdcRls.SubscriptionManager do
   end
 
   def handle_info(msg, state) do
-    Logger.error("Undef msg #{inspect(msg, pretty: true)}")
+    log_error("UnhandledProcessMessage", msg)
+
     {:noreply, state}
   end
 
   ## Internal functions
 
-  defp check_delete_queue(timeout \\ @timeout) do
-    Process.send_after(
-      self(),
-      :check_delete_queue,
-      timeout
-    )
-  end
+  defp check_oids(), do: Process.send_after(self(), :check_oids, @check_oids_interval)
 
-  defp check_oids() do
-    Process.send_after(
-      self(),
-      :check_oids,
-      @check_oids_interval
-    )
-  end
+  defp now(), do: System.system_time(:millisecond)
 
-  defp now() do
-    System.system_time(:millisecond)
-  end
+  defp check_no_users(), do: Process.send_after(self(), :check_no_users, @check_no_users_interval)
 
-  defp check_no_users() do
-    Process.send_after(
-      self(),
-      :check_no_users,
-      @check_no_users_interval
-    )
-  end
+  defp check_delete_queue(timeout \\ @timeout),
+    do: Process.send_after(self(), :check_delete_queue, timeout)
 end

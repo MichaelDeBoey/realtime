@@ -3,38 +3,42 @@ defmodule RealtimeWeb.Router do
 
   require Logger
 
-  import RealtimeWeb.ChannelsAuthorization, only: [authorize: 2]
+  import RealtimeWeb.ChannelsAuthorization, only: [authorize: 3]
 
   pipeline :browser do
-    plug :accepts, ["html"]
-    plug :fetch_session
-    plug :fetch_live_flash
-    plug :put_root_layout, {RealtimeWeb.LayoutView, :root}
-    plug :protect_from_forgery
-    plug :put_secure_browser_headers
+    plug(:accepts, ["html"])
+    plug(:fetch_session)
+    plug(:fetch_live_flash)
+    plug(:put_root_layout, {RealtimeWeb.LayoutView, :root})
+    plug(:protect_from_forgery)
+    plug(:put_secure_browser_headers)
   end
 
   pipeline :api do
-    plug :accepts, ["json"]
-    plug :check_auth, :api_jwt_secret
+    plug(:accepts, ["json"])
+    plug(:check_auth, [:api_jwt_secret, :api_blocklist])
+  end
+
+  pipeline :open_cors do
+    plug(Corsica, origins: "*")
   end
 
   pipeline :tenant_api do
-    plug :accepts, ["json"]
-    plug RealtimeWeb.Plugs.AssignTenant
-    plug RealtimeWeb.Plugs.RateLimiter
+    plug(:accepts, ["json"])
+    plug(RealtimeWeb.Plugs.AssignTenant)
+    plug(RealtimeWeb.Plugs.RateLimiter)
   end
 
   pipeline :secure_tenant_api do
-    plug RealtimeWeb.AuthTenant
+    plug(RealtimeWeb.AuthTenant)
   end
 
   pipeline :dashboard_admin do
-    plug :dashboard_basic_auth
+    plug(:dashboard_basic_auth)
   end
 
   pipeline :metrics do
-    plug :check_auth, :metrics_jwt_secret
+    plug(:check_auth, [:metrics_jwt_secret, :metrics_blocklist])
   end
 
   pipeline :openapi do
@@ -42,12 +46,16 @@ defmodule RealtimeWeb.Router do
   end
 
   scope "/", RealtimeWeb do
-    pipe_through :browser
+    get("/healthcheck", PageController, :healthcheck)
+  end
 
-    live "/", PageLive.Index, :index
-    live "/inspector", InspectorLive.Index, :index
-    live "/inspector/new", InspectorLive.Index, :new
-    live "/status", StatusLive.Index, :index
+  scope "/", RealtimeWeb do
+    pipe_through(:browser)
+
+    live("/", PageLive.Index, :index)
+    live("/inspector", InspectorLive.Index, :index)
+    live("/inspector/new", InspectorLive.Index, :new)
+    live("/status", StatusLive.Index, :index)
   end
 
   scope "/swaggerui" do
@@ -56,45 +64,47 @@ defmodule RealtimeWeb.Router do
   end
 
   scope "/admin", RealtimeWeb do
-    pipe_through :browser
+    pipe_through(:browser)
 
     unless Mix.env() in [:dev, :test] do
-      pipe_through :dashboard_admin
+      pipe_through(:dashboard_admin)
     end
 
-    live "/", AdminLive.Index, :index
-    live "/tenants", TenantsLive.Index, :index
+    live("/", AdminLive.Index, :index)
+    live("/tenants", TenantsLive.Index, :index)
   end
 
   scope "/metrics", RealtimeWeb do
-    pipe_through :metrics
+    pipe_through(:metrics)
 
-    get "/", MetricsController, :index
+    get("/", MetricsController, :index)
   end
 
   scope "/api" do
-    pipe_through :openapi
+    pipe_through(:openapi)
 
-    get "/openapi", OpenApiSpex.Plug.RenderSpec, []
+    get("/openapi", OpenApiSpex.Plug.RenderSpec, [])
   end
 
   scope "/api", RealtimeWeb do
-    pipe_through :api
+    pipe_through(:api)
 
-    resources "/tenants", TenantController, param: "tenant_id", except: [:edit, :new]
-    post "/tenants/:tenant_id/reload", TenantController, :reload
+    resources("/tenants", TenantController, param: "tenant_id", except: [:edit, :new])
+    post("/tenants/:tenant_id/reload", TenantController, :reload)
+    get("/tenants/:tenant_id/health", TenantController, :health)
+    patch("/tenants/:tenant_id/management", TenantController, :patch)
   end
 
   scope "/api", RealtimeWeb do
-    pipe_through :tenant_api
+    pipe_through(:tenant_api)
 
-    get "/ping", PingController, :ping
+    get("/ping", PingController, :ping)
   end
 
   scope "/api", RealtimeWeb do
-    pipe_through [:tenant_api, :secure_tenant_api]
+    pipe_through([:open_cors, :tenant_api, :secure_tenant_api])
 
-    post "/broadcast", BroadcastController, :broadcast
+    post("/broadcast", BroadcastController, :broadcast)
   end
 
   # Enables LiveDashboard only for development
@@ -105,13 +115,13 @@ defmodule RealtimeWeb.Router do
   # you can use Plug.BasicAuth to set up some basic authentication
   # as long as you are also using SSL (which you should anyway).
   scope "/admin" do
-    pipe_through :browser
+    pipe_through(:browser)
 
     unless Mix.env() in [:dev, :test] do
-      pipe_through :dashboard_admin
+      pipe_through(:dashboard_admin)
     end
 
-    live_dashboard "/dashboard",
+    live_dashboard("/dashboard",
       ecto_repos: [
         Realtime.Repo,
         Realtime.Repo.Replica.FRA,
@@ -120,14 +130,22 @@ defmodule RealtimeWeb.Router do
         Realtime.Repo.Replica.SJC
       ],
       ecto_psql_extras_options: [long_running_queries: [threshold: "200 milliseconds"]],
-      metrics: RealtimeWeb.Telemetry
+      metrics: RealtimeWeb.Telemetry,
+      additional_pages: [
+        route_name: Realtime.Dashboard.ProcessDump
+      ]
+    )
   end
 
-  defp check_auth(conn, secret_key) do
+  defp check_auth(conn, [secret_key, blocklist_key]) do
     secret = Application.fetch_env!(:realtime, secret_key)
 
+    blocklist = Application.get_env(:realtime, blocklist_key, [])
+
     with ["Bearer " <> token] <- get_req_header(conn, "authorization"),
-         {:ok, _claims} <- authorize(token, secret) do
+         token <- Regex.replace(~r/\s|\n/, URI.decode(token), ""),
+         false <- token in blocklist,
+         {:ok, _claims} <- authorize(token, secret, nil) do
       conn
     else
       _ ->

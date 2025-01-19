@@ -1,5 +1,6 @@
 defmodule Realtime.Extensions.CdcRlsSubscriptionsTest do
-  use RealtimeWeb.ChannelCase
+  # async: false due to the fact that it uses the database
+  use RealtimeWeb.ChannelCase, async: false
   doctest Extensions.PostgresCdcRls.Subscriptions
 
   alias Extensions.PostgresCdcRls.Subscriptions, as: S
@@ -38,6 +39,8 @@ defmodule Realtime.Extensions.CdcRlsSubscriptionsTest do
     assert {:ok, [%Postgrex.Result{}]} =
              S.create(conn, "supabase_realtime_test", params_list, self(), self())
 
+    Process.sleep(500)
+
     params_list = [
       %{
         claims: %{
@@ -51,6 +54,8 @@ defmodule Realtime.Extensions.CdcRlsSubscriptionsTest do
     assert {:ok, [%Postgrex.Result{}]} =
              S.create(conn, "supabase_realtime_test", params_list, self(), self())
 
+    Process.sleep(500)
+
     params_list = [
       %{
         claims: %{
@@ -62,8 +67,46 @@ defmodule Realtime.Extensions.CdcRlsSubscriptionsTest do
     ]
 
     assert {:error,
-            "No subscription params provided. Please provide at least a `schema` or `table` to subscribe to."} =
+            "No subscription params provided. Please provide at least a `schema` or `table` to subscribe to: %{}"} =
              S.create(conn, "supabase_realtime_test", params_list, self(), self())
+
+    Process.sleep(500)
+
+    params_list = [
+      %{
+        claims: %{
+          "role" => "anon"
+        },
+        id: UUID.uuid1(),
+        params: %{
+          "user_token" => "potato"
+        }
+      }
+    ]
+
+    assert {:error,
+            "No subscription params provided. Please provide at least a `schema` or `table` to subscribe to: <redacted>"} =
+             S.create(conn, "supabase_realtime_test", params_list, self(), self())
+
+    Process.sleep(500)
+
+    params_list = [
+      %{
+        claims: %{
+          "role" => "anon"
+        },
+        id: UUID.uuid1(),
+        params: %{
+          "auth_token" => "potato"
+        }
+      }
+    ]
+
+    assert {:error,
+            "No subscription params provided. Please provide at least a `schema` or `table` to subscribe to: <redacted>"} =
+             S.create(conn, "supabase_realtime_test", params_list, self(), self())
+
+    Process.sleep(500)
 
     %Postgrex.Result{rows: [[num]]} =
       P.query!(conn, "select count(*) from realtime.subscription", [])
@@ -95,6 +138,7 @@ defmodule Realtime.Extensions.CdcRlsSubscriptionsTest do
     ]
 
     S.create(conn, "supabase_realtime_test", params_list, self(), self())
+    Process.sleep(500)
 
     assert {:ok, %P.Result{}} = S.delete(conn, bin_id)
 
@@ -128,6 +172,7 @@ defmodule Realtime.Extensions.CdcRlsSubscriptionsTest do
     ]
 
     S.create(conn, "supabase_realtime_test", params_list, self(), self())
+    Process.sleep(500)
 
     assert {:ok, %P.Result{}} = S.delete_multi(conn, [bin_id1, bin_id2])
 
@@ -169,5 +214,6 @@ defmodule Realtime.Extensions.CdcRlsSubscriptionsTest do
       end)
 
     S.create(conn, "supabase_realtime_test", params_list, self(), self())
+    Process.sleep(500)
   end
 end

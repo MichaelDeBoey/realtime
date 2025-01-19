@@ -1,30 +1,30 @@
 defmodule Extensions.PostgresCdcRls do
-  @moduledoc false
+  @moduledoc """
+  Callbacks for initiating a Postgres connection and creating a Realtime subscription for database changes.
+  """
+
   @behaviour Realtime.PostgresCdc
   require Logger
+  import Realtime.Logs
 
   alias RealtimeWeb.Endpoint
-  alias Realtime.PostgresCdc
   alias Extensions.PostgresCdcRls, as: Rls
   alias Rls.Subscriptions
+  alias Realtime.Rpc
 
+  @spec handle_connect(map()) :: {:ok, {pid(), pid()}} | nil
   def handle_connect(args) do
-    Enum.reduce_while(1..5, nil, fn retry, acc ->
-      get_manager_conn(args["id"])
-      |> case do
-        nil ->
-          start_distributed(args)
-          if retry > 1, do: Process.sleep(1_000)
-          {:cont, acc}
+    case get_manager_conn(args["id"]) do
+      {:error, nil} ->
+        start_distributed(args)
+        nil
 
-        :wait ->
-          Process.sleep(1_000)
-          {:cont, acc}
+      {:error, :wait} ->
+        nil
 
-        {:ok, pid, conn} ->
-          {:halt, {:ok, {pid, conn}}}
-      end
-    end)
+      {:ok, pid, conn} ->
+        {:ok, {pid, conn}}
+    end
   end
 
   def handle_after_connect({manager_pid, conn}, settings, params) do
@@ -33,13 +33,7 @@ defmodule Extensions.PostgresCdcRls do
     conn_node = node(conn)
 
     if conn_node !== node() do
-      :rpc.call(
-        conn_node,
-        Subscriptions,
-        :create,
-        opts,
-        15_000
-      )
+      Rpc.call(conn_node, Subscriptions, :create, opts, timeout: 15_000)
     else
       apply(Subscriptions, :create, opts)
     end
@@ -49,10 +43,18 @@ defmodule Extensions.PostgresCdcRls do
     Endpoint.subscribe("realtime:postgres:" <> tenant, metadata)
   end
 
-  def handle_stop(tenant, timeout) do
+  @doc """
+  Stops the Supervision tree for a tenant.
+
+  Expects an `external_id` as the `tenant`.
+  """
+
+  @spec handle_stop(String.t(), non_neg_integer()) :: :ok
+  def handle_stop(tenant, timeout) when is_binary(tenant) do
     case :syn.whereis_name({__MODULE__, tenant}) do
       :undefined ->
         Logger.warning("Database supervisor not found for tenant #{tenant}")
+        :ok
 
       pid ->
         DynamicSupervisor.stop(pid, :shutdown, timeout)
@@ -62,82 +64,59 @@ defmodule Extensions.PostgresCdcRls do
   ## Internal functions
 
   def start_distributed(%{"region" => region, "id" => tenant} = args) do
-    fly_region = PostgresCdc.aws_to_fly(region)
-    launch_node = PostgresCdc.launch_node(tenant, fly_region, node())
+    platform_region = Realtime.Nodes.platform_region_translator(region)
+    launch_node = Realtime.Nodes.launch_node(tenant, platform_region, node())
 
     Logger.warning(
-      "Starting distributed postgres extension #{inspect(lauch_node: launch_node, region: region, fly_region: fly_region)}"
+      "Starting distributed postgres extension #{inspect(lauch_node: launch_node, region: region, platform_region: platform_region)}"
     )
 
-    case :rpc.call(launch_node, __MODULE__, :start, [args], 30_000) do
+    case Rpc.call(launch_node, __MODULE__, :start, [args], timeout: 30_000, tenant: tenant) do
       {:ok, _pid} = ok ->
         ok
 
       {:error, {:already_started, _pid}} = error ->
-        Logger.info("Postgres Extention already started on node #{inspect(launch_node)}")
+        Logger.info("Postgres Extension already started on node #{inspect(launch_node)}")
         error
 
       error ->
-        Logger.error("Error starting Postgres Extention: #{inspect(error, pretty: true)}")
+        log_error("ErrorStartingPostgresCDC", error)
         error
     end
   end
 
   @doc """
-  Start db poller.
-
+  Start db poller. Expects an `external_id` as a `tenant`.
   """
+
   @spec start(map()) :: :ok | {:error, :already_started | :reserved}
-  def start(args) do
-    addrtype =
-      case args["ip_version"] do
-        6 ->
-          :inet6
+  def start(%{"id" => tenant} = args) when is_binary(tenant) do
+    args = Map.merge(args, %{"subs_pool_size" => Map.get(args, "subcriber_pool_size", 4)})
 
-        _ ->
-          :inet
-      end
-
-    args =
-      Map.merge(args, %{
-        "db_socket_opts" => [addrtype],
-        "subs_pool_size" => Map.get(args, "subcriber_pool_size", 5)
-      })
-
-    Logger.debug("Starting postgres stream extension with args: #{inspect(args, pretty: true)}")
+    Logger.debug("Starting #{__MODULE__} extension with args: #{inspect(args, pretty: true)}")
 
     DynamicSupervisor.start_child(
-      {:via, PartitionSupervisor, {Rls.DynamicSupervisor, self()}},
+      {:via, PartitionSupervisor, {Rls.DynamicSupervisor, tenant}},
       %{
-        id: args["id"],
+        id: tenant,
         start: {Rls.WorkerSupervisor, :start_link, [args]},
         restart: :transient
       }
     )
   end
 
-  @spec get_manager_conn(String.t()) :: nil | :wait | {:ok, pid(), pid()}
+  @spec get_manager_conn(String.t()) :: {:error, nil | :wait} | {:ok, pid(), pid()}
   def get_manager_conn(id) do
-    :syn.lookup(__MODULE__, id)
-    |> case do
-      {_, %{manager: nil, subs_pool: nil}} ->
-        :wait
-
-      {_, %{manager: manager, subs_pool: conn}} ->
-        {:ok, manager, conn}
-
-      _ ->
-        nil
+    case :syn.lookup(__MODULE__, id) do
+      {_, %{manager: nil, subs_pool: nil}} -> {:error, :wait}
+      {_, %{manager: manager, subs_pool: conn}} -> {:ok, manager, conn}
+      _ -> {:error, nil}
     end
   end
 
   @spec supervisor_id(String.t(), String.t()) :: {atom(), String.t(), map()}
   def supervisor_id(tenant, region) do
-    {
-      __MODULE__,
-      tenant,
-      %{region: region, manager: nil, subs_pool: nil}
-    }
+    {__MODULE__, tenant, %{region: region, manager: nil, subs_pool: nil}}
   end
 
   @spec update_meta(String.t(), pid(), pid()) :: {:ok, {pid(), term()}} | {:error, term()}
@@ -146,7 +125,7 @@ defmodule Extensions.PostgresCdcRls do
       if node(pid) == node(manager_pid) do
         %{meta | manager: manager_pid, subs_pool: subs_pool}
       else
-        Logger.error(
+        Logger.warning(
           "Node mismatch for tenant #{tenant} #{inspect(node(pid))} #{inspect(node(manager_pid))}"
         )
 

@@ -63,7 +63,7 @@ You can check out the [Multiplayer demo](https://multiplayer.dev) that features 
 
 To get started, spin up your Postgres database and Realtime server containers defined in `docker-compose.yml`. As an example, you may run `docker-compose -f docker-compose.yml up`.
 
-> **Note**  
+> **Note**
 > Supabase runs Realtime in production with a separate database that keeps track of all tenants. However, a schema, `_realtime`, is created when spinning up containers via `docker-compose.yml` to simplify local development.
 
 A tenant has already been added on your behalf. You can confirm this by checking the `_realtime.tenants` and `_realtime.extensions` tables inside the database.
@@ -90,8 +90,7 @@ You can add your own by making a `POST` request to the server. You must change b
             "db_port": "5432",
             "region": "us-west-1",
             "poll_interval_ms": 100,
-            "poll_max_record_bytes": 1048576,
-            "ip_version": 4
+            "poll_max_record_bytes": 1048576
           }
         }
       ]
@@ -100,7 +99,7 @@ You can add your own by making a `POST` request to the server. You must change b
   http://localhost:4000/api/tenants
 ```
 
-> **Note**  
+> **Note**
 > The `Authorization` token is signed with the secret set by `API_JWT_SECRET` in `docker-compose.yml`.
 
 If you want to listen to Postgres changes, you can create a table and then add the table to the `supabase_realtime` publication:
@@ -119,40 +118,48 @@ The WebSocket URL must contain the subdomain, `external_id` of the tenant on the
 
 If you're using the default tenant, the URL is `ws://realtime-dev.localhost:4000/socket` (make sure the port is correct for your development environment), and you can use `eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJleHAiOjE3MDMwMjgwODcsInJvbGUiOiJwb3N0Z3JlcyJ9.tz_XJ89gd6bN8MBpCl7afvPrZiBH6RB65iA1FadPT3Y` for the token. The token must have `exp` and `role` (database role) keys.
 
-**ALL RELEVANT OPTIONS**
+**Environment Variables**
 
-> **Note**  
-> Realtime server is tightly coupled to [Fly.io](https://fly.io) at the moment.
-
-```sh
-PORT                       # {number}      Port which you can connect your client/listeners
-DB_HOST                    # {string}      Database host URL
-DB_PORT                    # {number}      Database port
-DB_USER                    # {string}      Database user
-DB_PASSWORD                # {string}      Database password
-DB_NAME                    # {string}      Postgres database name
-DB_ENC_KEY                 # {string}      Key used to encrypt sensitive fields in _realtime.tenants and _realtime.extensions tables. Recommended: 16 characters.
-DB_AFTER_CONNECT_QUERY     # {string}      Query that is run after server connects to database.
-API_JWT_SECRET             # {string}      Secret that is used to sign tokens used to manage tenants and their extensions via HTTP requests.
-FLY_ALLOC_ID               # {string}      This is auto-set when deploying to Fly. Otherwise, set to any string.
-FLY_APP_NAME               # {string}      A name of the server.
-FLY_REGION                 # {string}        Name of the region that the server is running in. Fly auto-sets this on deployment. Otherwise, set to any string.
-SECRET_KEY_BASE            # {string}      Secret used by the server to sign cookies. Recommended: 64 characters.
-ERL_AFLAGS                 # {string}      Set to either "-proto_dist inet_tcp" or "-proto_dist inet6_tcp" depending on whether or not your network uses IPv4 or IPv6, respectively.
-ENABLE_TAILSCALE           # {string}      Use Tailscale for private networking. Set to either 'true' or 'false'.
-TAILSCALE_APP_NAME         # {string}      Name of the Tailscale app.
-TAILSCALE_AUTHKEY          # {string}      Auth key for the Tailscape app.
-DNS_NODES                  # {string}      Node name used when running server in a cluster.
-MAX_CONNECTIONS            # {string}     Set the soft maximum for WebSocket connections. Defaults to '16384'.
-NUM_ACCEPTORS              # {string}     Set the number of server processes that will relay incoming WebSocket connection requests. Defaults to '100'.
-DB_QUEUE_TARGET            # {string}     Maximum time to wait for a connection from the pool. Defaults to '5000' or 5 seconds. See for more info: https://hexdocs.pm/db_connection/DBConnection.html#start_link/2-queue-config.
-DB_QUEUE_INTERVAL          # {string}     Interval to wait to check if all connections were checked out under DB_QUEUE_TARGET. If all connections surpassed the target during this interval than the target is doubled. Defaults to '5000' or 5 seconds. See for more info: https://hexdocs.pm/db_connection/DBConnection.html#start_link/2-queue-config.
-DB_POOL_SIZE               # {string}     Sets the number of connections in the database pool. Defaults to '5'.
-SLOT_NAME_SUFFIX           # {string}     This is appended to the replication slot which allows making a custom slot name. May contain lowercase letters, numbers, and the underscore character. Together with the default `supabase_realtime_replication_slot`, slot name should be up to 64 characters long.
-```
-
+| Variable                             | Type    | Description                                                                                                                                                                                                                                                                                                                     |
+| -----------------------------------  | ------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| PORT                                 | number  | Port which you can connect your client/listeners                                                                                                                                                                                                                                                                                |
+| DB_HOST                              | string  | Database host URL                                                                                                                                                                                                                                                                                                               |
+| DB_PORT                              | number  | Database port                                                                                                                                                                                                                                                                                                                   |
+| DB_USER                              | string  | Database user                                                                                                                                                                                                                                                                                                                   |
+| DB_PASSWORD                          | string  | Database password                                                                                                                                                                                                                                                                                                               |
+| DB_NAME                              | string  | Postgres database name                                                                                                                                                                                                                                                                                                          |
+| DB_ENC_KEY                           | string  | Key used to encrypt sensitive fields in \_realtime.tenants and \_realtime.extensions tables. Recommended: 16 characters.                                                                                                                                                                                                        |
+| DB_AFTER_CONNECT_QUERY               | string  | Query that is run after server connects to database.                                                                                                                                                                                                                                                                            |
+| DB_IP_VERSION                        | string  | Sets the IP Version to be used. Allowed values are "ipv6" and "ipv4". If none are set we will try to infer the correct version                                                                                                                                                                                                  |
+| API_JWT_SECRET                       | string  | Secret that is used to sign tokens used to manage tenants and their extensions via HTTP requests.                                                                                                                                                                                                                               |
+| SECRET_KEY_BASE                      | string  | Secret used by the server to sign cookies. Recommended: 64 characters.                                                                                                                                                                                                                                                          |
+| ERL_AFLAGS                           | string  | Set to either "-proto_dist inet_tcp" or "-proto_dist inet6_tcp" depending on whether or not your network uses IPv4 or IPv6, respectively.                                                                                                                                                                                       |
+| APP_NAME                             | string  | A name of the server.                                                                                                                                                                                                                                                                                                           |
+| DNS_NODES                            | string  | Node name used when running server in a cluster.                                                                                                                                                                                                                                                                                |
+| MAX_CONNECTIONS                      | string  | Set the soft maximum for WebSocket connections. Defaults to '16384'.                                                                                                                                                                                                                                                            |
+| MAX_HEADER_LENGTH                    | string  | Set the maximum header length for connections (in bytes). Defaults to '4096'.                                                                                                                                                                                                                                                   |
+| NUM_ACCEPTORS                        | string  | Set the number of server processes that will relay incoming WebSocket connection requests. Defaults to '100'.                                                                                                                                                                                                                   |
+| DB_QUEUE_TARGET                      | string  | Maximum time to wait for a connection from the pool. Defaults to '5000' or 5 seconds. See for more info: [DBConnection](https://hexdocs.pm/db_connection/DBConnection.html#start_link/2-queue-config).                                                                                                                          |
+| DB_QUEUE_INTERVAL                    | string  | Interval to wait to check if all connections were checked out under DB_QUEUE_TARGET. If all connections surpassed the target during this interval than the target is doubled. Defaults to '5000' or 5 seconds. See for more info: [DBConnection](https://hexdocs.pm/db_connection/DBConnection.html#start_link/2-queue-config). |
+| DB_POOL_SIZE                         | string  | Sets the number of connections in the database pool. Defaults to '5'.                                                                                                                                                                                                                                                           |
+| SLOT_NAME_SUFFIX                     | string  | This is appended to the replication slot which allows making a custom slot name. May contain lowercase letters, numbers, and the underscore character. Together with the default `supabase_realtime_replication_slot`, slot name should be up to 64 characters long.                                                            |
+| TENANT_MAX_BYTES_PER_SECOND          | string  | The default value of maximum bytes per second that each tenant can support, used when creating a tenant for the first time. Defaults to '100_000'.                                                                                                                                                                              |
+| TENANT_MAX_CHANNELS_PER_CLIENT       | string  | The default value of maximum number of channels each tenant can support, used when creating a tenant for the first time. Defaults to '100'.                                                                                                                                                                                     |
+| TENANT_MAX_CONCURRENT_USERS          | string  | The default value of maximum concurrent users per channel that each tenant can support, used when creating a tenant for the first time. Defaults to '200'.                                                                                                                                                                      |
+| TENANT_MAX_EVENTS_PER_SECOND         | string  | The default value of maximum events per second that each tenant can support, used when creating a tenant for the first time. Defaults to '100'.                                                                                                                                                                                 |
+| TENANT_MAX_JOINS_PER_SECOND          | string  | The default value of maximum channel joins per second that each tenant can support, used when creating a tenant for the first time. Defaults to '100'.                                                                                                                                                                          |
+| SEED_SELF_HOST                       | boolean | Seeds the system with default tenant                                                                                                                                                                                                                                                                                            |
+| SELF_HOST_TENANT_NAME                | string  | Tenant reference to be used for self host. Do keep in mind to use a URL compatible name                                                                                                                                                                                                                                         |
+| LOG_LEVEL                            | string  | Sets log level for Realtime logs. Defaults to info, supported levels are: info, emergency, alert, critical, error, warning, notice, debug                                                                                                                                                                                       |
+| RUN_JANITOR                          | boolean | Do you want to janitor tasks to run                                                                                                                                                                                                                                                                                             |
+| JANITOR_SCHEDULE_TIMER_IN_MS         | number  | Time in ms to run the janitor task                                                                                                                                                                                                                                                                                              |
+| JANITOR_SCHEDULE_RANDOMIZE           | boolean | Adds a randomized value of minutes to the timer                                                                                                                                                                                                                                                                                 |
+| JANITOR_RUN_AFTER_IN_MS              | number  | Tells system when to start janitor tasks after boot                                                                                                                                                                                                                                                                             |
+| JANITOR_CLEANUP_MAX_CHILDREN         | number  | Maximum number of concurrent tasks working on janitor cleanup                                                                                                                                                                                                                                                                   |
+| JANITOR_CLEANUP_CHILDREN_TIMEOUT     | number  | Timeout for each async task for janitor cleanup                                                                                                                                                                                                                                                                                 |
+| JANITOR_CHUNK_SIZE                   | number  | Number of tenants to process per chunk. Each chunk will be processed by a Task                                                                                                                                                                                                                                                  |
+| METRICS_CLEANER_SCHEDULE_TIMER_IN_MS | number  | Time in ms to run the Metric Cleaner task                                                                                                                                                                                                                                                                                       |
 ## WebSocket URL
-
 The WebSocket URL is in the following format for local development: `ws://[external_id].localhost:4000/socket/websocket`
 
 If you're using Supabase's hosted Realtime in production the URL is `wss://[project-ref].supabase.co/realtime/v1/websocket?apikey=[anon-token]&log_level=info&vsn=1.0.0"`
@@ -172,9 +179,69 @@ Verify JWT claims by setting JWT_CLAIM_VALIDATORS:
 > Then JWT's "iss" value must equal "Issuer" and "nbf" value must equal 1610078130.
 
 **Note:**
+
 > JWT expiration is checked automatically. `exp` and `role` (database role) keys are mandatory.
 
 **Authorizing Client Connection**: You can pass in the JWT by following the instructions under the Realtime client lib. For example, refer to the **Usage** section in the [@supabase/realtime-js](https://github.com/supabase/realtime-js) client library.
+
+## Error Operational Codes
+
+This is the list of operational codes that can help you understand your deployment and your usage.
+
+| Code                               | Description                                                                                                                         |
+| ---------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------- |
+| TopicNameRequired                  | You are trying to use Realtime without a topic name set                                                                             |
+| RealtimeDisabledForConfiguration   | The configuration provided to Realtime on connect will not be able to provide you any Postgres Changes                              |
+| TenantNotFound                     | The tenant you are trying to connect to does not exist                                                                              |
+| ErrorConnectingToWebsocket         | Error when trying to connect to the WebSocket server                                                                                |
+| ErrorAuthorizingWebsocket          | Error when trying to authorize the WebSocket connection                                                                             |
+| TableHasSpacesInName               | The table you are trying to listen to has spaces in its name which we are unable to support                                         |
+| UnableToDeleteTenant               | Error when trying to delete a tenant                                                                                                |
+| UnableToSetPolicies                | Error when setting up Authorization Policies                                                                                        |
+| UnableCheckoutConnection           | Error when trying to checkout a connection from the tenant pool                                                                     |
+| UnableToSubscribeToPostgres        | Error when trying to subscribe to Postgres changes                                                                                  |
+| ChannelRateLimitReached            | The number of channels you can create has reached its limit                                                                         |
+| ConnectionRateLimitReached         | The number of connected clients as reached its limit                                                                                |
+| ClientJoinRateLimitReached         | The rate of joins per second from your clients as reached the channel limits                                                        |
+| UnableToConnectToTenantDatabase    | Realtime was not able to connect to the tenant's database                                                                           |
+| RealtimeNodeDisconnected           | Realtime is a distributed application and this means that one the system is unable to communicate with one of the distributed nodes |
+| MigrationsFailedToRun              | Error when running the migrations against the Tenant database that are required by Realtime                                         |
+| StartListenAndReplicationFailed    | Error when starting the replication and listening of errors for database broadcasting                                               |
+| MigrationCheckFailed               | Check to see if we require to run migrations fails                                                                                  |
+| PartitionCreationFailed            | Error when creating partitions for realtime.messages                                                                                |
+| ErrorStartingPostgresCDCStream     | Error when starting the Postgres CDC stream which is used for Postgres Changes                                                      |
+| UnknownDataProcessed               | An unknown data type was processed by the Realtime system                                                                           |
+| ErrorStartingPostgresCDC           | Error when starting the Postgres CDC extension which is used for Postgres Changes                                                   |
+| ReplicationSlotBeingUsed           | The replication slot is being used by another transaction                                                                           |
+| PoolingReplicationPreparationError | Error when preparing the replication slot                                                                                           |
+| PoolingReplicationError            | Error when pooling the replication slot                                                                                             |
+| SubscriptionDeletionFailed         | Error when trying to delete a subscription for postgres changes                                                                     |
+| UnableToDeletePhantomSubscriptions | Error when trying to delete subscriptions that are no longer being used                                                             |
+| UnableToCheckProcessesOnRemoteNode | Error when trying to check the processes on a remote node                                                                           |
+| UnableToCreateCounter              | Error when trying to create a counter to track rate limits for a tenant                                                             |
+| UnableToIncrementCounter           | Error when trying to increment a counter to track rate limits for a tenant                                                          |
+| UnableToDecrementCounter           | Error when trying to decrement a counter to track rate limits for a tenant                                                          |
+| UnableToUpdateCounter              | Error when trying to update a counter to track rate limits for a tenant                                                             |
+| UnableToFindCounter                | Error when trying to find a counter to track rate limits for a tenant                                                               |
+| UnhandledProcessMessage            | Unhandled message received by a Realtime process                                                                                    |
+| UnableToSetPolicies                | We were not able to set policies for this connection                                                                                |
+| ConnectionInitializing             | Database is initializing connection                                                                                                 |
+| DatabaseConnectionIssue            | Database had connection issues and connection was not able to be established                                                        |
+| UnableToConnectToProject           | Unable to connect to Project database                                                                                               |
+| InvalidJWTExpiration               | JWT exp claim value it's incorrect                                                                                                  |
+| JwtSignatureError                  | JWT signature was not able to be validated                                                                                          |
+| Unauthorized                       | Unauthorized access to Realtime channel                                                                                             |
+| RealtimeRestarting                 | Realtime is currently restarting                                                                                                    |
+| UnableToProcessListenPayload       | Payload sent in NOTIFY operation was JSON parsable                                                                                  |
+| UnableToListenToTenantDatabase     | Unable to LISTEN for notifications against the Tenant Database                                                                      |
+| UnprocessableEntity                | Received a HTTP request with a body that was not able to be processed by the endpoint                                               |
+| InitializingProjectConnection      | Connection against Tenant database is still starting                                                                                |
+| ErrorOnRpcCall                     | Error when calling another realtime node                                                                                            |
+| ErrorExecutingTransaction          | Error executing a database transaction in tenant database                                                                           |
+| SynInitializationError             | Our framework to syncronize processes has failed to properly startup a connection to the database                                   |
+| JanitorFailedToDeleteOldMessages   | Scheduled task for realtime.message cleanup was unable to run                                                                       |
+| UnknownErrorOnController           | An error we are not handling correctly was triggered on a controller                                                                |
+| UnknownErrorOnChannel              | An error we are not handling correctly was triggered on a channel                                                                   |
 
 ## License
 

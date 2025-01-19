@@ -2,11 +2,15 @@ defmodule Extensions.PostgresCdcRls.SubscriptionsChecker do
   @moduledoc false
   use GenServer
   require Logger
-
+  import Realtime.Logs
   alias Extensions.PostgresCdcRls, as: Rls
-  alias Rls.Subscriptions
 
-  alias Realtime.Helpers, as: H
+  alias Realtime.Database
+  alias Realtime.Helpers
+  alias Realtime.Rpc
+  alias Realtime.Telemetry
+
+  alias Rls.Subscriptions
 
   @timeout 120_000
   @max_delete_records 1000
@@ -36,22 +40,19 @@ defmodule Extensions.PostgresCdcRls.SubscriptionsChecker do
 
   @impl true
   def init(args) do
-    %{
-      "id" => id,
-      "db_host" => host,
-      "db_port" => port,
-      "db_name" => name,
-      "db_user" => user,
-      "db_password" => pass,
-      "db_socket_opts" => socket_opts,
-      "subscribers_tid" => subscribers_tid
-    } = args
-
+    %{"id" => id} = args
     Logger.metadata(external_id: id, project: id)
+    {:ok, nil, {:continue, {:connect, args}}}
+  end
 
-    ssl_enforced = H.default_ssl_param(args)
+  @impl true
+  def handle_continue({:connect, args}, _) do
+    %{"id" => id, "subscribers_tid" => subscribers_tid} = args
 
-    {:ok, conn} = H.connect_db(host, port, name, user, pass, socket_opts, 1, 5_000, ssl_enforced)
+    realtime_subscription_checker_settings =
+      Database.from_settings(args, "realtime_subscription_checker")
+
+    {:ok, conn} = Database.connect_db(realtime_subscription_checker_settings)
 
     state = %State{
       id: id,
@@ -64,20 +65,22 @@ defmodule Extensions.PostgresCdcRls.SubscriptionsChecker do
       }
     }
 
-    {:ok, state}
+    {:noreply, state}
   end
 
   @impl true
   def handle_info(
         :check_active_pids,
-        %State{check_active_pids: ref, subscribers_tid: tid, delete_queue: delete_queue} = state
+        %State{check_active_pids: ref, subscribers_tid: tid, delete_queue: delete_queue, id: id} =
+          state
       ) do
-    H.cancel_timer(ref)
+    Helpers.cancel_timer(ref)
 
     ids =
-      subscribers_by_node(tid)
+      tid
+      |> subscribers_by_node()
       |> not_alive_pids_dist()
-      |> pop_not_alive_pids(tid)
+      |> pop_not_alive_pids(tid, id)
 
     new_delete_queue =
       if length(ids) > 0 do
@@ -98,19 +101,20 @@ defmodule Extensions.PostgresCdcRls.SubscriptionsChecker do
   end
 
   def handle_info(:check_delete_queue, %State{delete_queue: %{ref: ref, queue: q}} = state) do
-    H.cancel_timer(ref)
+    Helpers.cancel_timer(ref)
 
     new_queue =
       if !:queue.is_empty(q) do
-        {ids, q1} = H.queue_take(q, @max_delete_records)
-        Logger.error("Delete #{length(ids)} phantom subscribers from db")
+        {ids, q1} = Helpers.queue_take(q, @max_delete_records)
+        Logger.warning("Delete #{length(ids)} phantom subscribers from db")
 
         case Subscriptions.delete_multi(state.conn, ids) do
           {:ok, _} ->
             q1
 
           {:error, reason} ->
-            Logger.error("delete phantom subscriptions from the queue failed: #{inspect(reason)}")
+            log_error("UnableToDeletePhantomSubscriptions", reason)
+
             q
         end
       else
@@ -124,18 +128,25 @@ defmodule Extensions.PostgresCdcRls.SubscriptionsChecker do
 
   ## Internal functions
 
-  @spec pop_not_alive_pids([pid()], :ets.tid()) :: [Ecto.UUID.t()]
-  def pop_not_alive_pids(pids, tid) do
+  @spec pop_not_alive_pids([pid()], :ets.tid(), binary()) :: [Ecto.UUID.t()]
+  def pop_not_alive_pids(pids, tid, tenant_id) do
     Enum.reduce(pids, [], fn pid, acc ->
       case :ets.lookup(tid, pid) do
         [] ->
-          Logger.error("Can't find pid in subscribers table: #{inspect(pid)}")
+          Telemetry.execute(
+            [:realtime, :subscriptions_checker, :pid_not_found],
+            %{quantity: 1},
+            %{tenant_id: tenant_id}
+          )
+
           acc
 
         results ->
           for {^pid, postgres_id, _ref, _node} <- results do
-            Logger.error(
-              "Detected phantom subscriber #{inspect(pid)} with postgres_id #{inspect(postgres_id)}"
+            Telemetry.execute(
+              [:realtime, :subscriptions_checker, :phantom_pid_detected],
+              %{quantity: 1},
+              %{tenant_id: tenant_id}
             )
 
             :ets.delete(tid, pid)
@@ -148,12 +159,7 @@ defmodule Extensions.PostgresCdcRls.SubscriptionsChecker do
   @spec subscribers_by_node(:ets.tid()) :: %{node() => MapSet.t(pid())}
   def subscribers_by_node(tid) do
     fn {pid, _postgres_id, _ref, node}, acc ->
-      set =
-        if Map.has_key?(acc, node) do
-          MapSet.put(acc[node], pid)
-        else
-          MapSet.new([pid])
-        end
+      set = if Map.has_key?(acc, node), do: MapSet.put(acc[node], pid), else: MapSet.new([pid])
 
       Map.put(acc, node, set)
     end
@@ -166,9 +172,9 @@ defmodule Extensions.PostgresCdcRls.SubscriptionsChecker do
       if node == node() do
         acc ++ not_alive_pids(pids)
       else
-        case :rpc.call(node, __MODULE__, :not_alive_pids, [pids], 15_000) do
+        case Rpc.call(node, __MODULE__, :not_alive_pids, [pids], timeout: 15_000) do
           {:badrpc, _} = error ->
-            Logger.error("Can't check pids on node #{inspect(node)}: #{inspect(error)}")
+            log_error("UnableToCheckProcessesOnRemoteNode", error)
             acc
 
           pids ->
@@ -180,28 +186,10 @@ defmodule Extensions.PostgresCdcRls.SubscriptionsChecker do
 
   @spec not_alive_pids(MapSet.t(pid())) :: [pid()] | []
   def not_alive_pids(pids) do
-    Enum.reduce(pids, [], fn pid, acc ->
-      if Process.alive?(pid) do
-        acc
-      else
-        [pid | acc]
-      end
-    end)
+    Enum.reduce(pids, [], fn pid, acc -> if Process.alive?(pid), do: acc, else: [pid | acc] end)
   end
 
-  defp check_delete_queue() do
-    Process.send_after(
-      self(),
-      :check_delete_queue,
-      1000
-    )
-  end
+  defp check_delete_queue(), do: Process.send_after(self(), :check_delete_queue, 1000)
 
-  defp check_active_pids() do
-    Process.send_after(
-      self(),
-      :check_active_pids,
-      @timeout
-    )
-  end
+  defp check_active_pids(), do: Process.send_after(self(), :check_active_pids, @timeout)
 end

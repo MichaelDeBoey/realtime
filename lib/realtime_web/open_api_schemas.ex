@@ -5,6 +5,24 @@ defmodule RealtimeWeb.OpenApiSchemas do
 
   alias OpenApiSpex.Schema
 
+  defmodule ChannelParams do
+    @moduledoc false
+    require OpenApiSpex
+
+    OpenApiSpex.schema(%{
+      type: :object,
+      properties: %{
+        name: %Schema{
+          type: :string,
+          description: "Channel Name",
+          example: "channel-1"
+        }
+      }
+    })
+
+    def params(), do: {"Channel Params", "application/json", __MODULE__}
+  end
+
   defmodule TenantBatchParams do
     @moduledoc false
     require OpenApiSpex
@@ -17,8 +35,17 @@ defmodule RealtimeWeb.OpenApiSchemas do
           items: %Schema{
             type: :object,
             properties: %{
-              topic: %Schema{type: :string},
-              payload: %Schema{type: :object}
+              topic: %Schema{
+                type: :string,
+                description:
+                  "Note: libraries will prepend the channel name with 'realtime:' so if you use this endpoint directly you'll need to also prepend 'realtime:' so it's captured by clients properly"
+              },
+              payload: %Schema{type: :object},
+              event: %Schema{
+                type: :string,
+                description: "Name of the event being broadcast"
+              },
+              private: %Schema{type: :boolean}
             }
           }
         }
@@ -41,6 +68,20 @@ defmodule RealtimeWeb.OpenApiSchemas do
             external_id: %Schema{type: :string, description: "External ID"},
             name: %Schema{type: :string, description: "Tenant name"},
             jwt_secret: %Schema{type: :string, description: "JWT secret"},
+            jwt_jwks: %Schema{
+              type: :object,
+              description: "JWKS for verifying JWTs",
+              properties: %{
+                keys: %Schema{
+                  type: :array,
+                  description: "Set of JWKs",
+                  items: %Schema{
+                    type: :object,
+                    description: "JWK"
+                  }
+                }
+              }
+            },
             max_concurrent_users: %Schema{
               type: :number,
               description: "Maximum connected concurrent clients"
@@ -109,7 +150,6 @@ defmodule RealtimeWeb.OpenApiSchemas do
                 "db_port" => "5432",
                 "db_user" => "postgres",
                 "slot_name" => "supabase_realtime_replication_slot",
-                "ip_version" => 4,
                 "db_password" => "password",
                 "publication" => "supabase_realtime",
                 "poll_interval_ms" => 100,
@@ -139,6 +179,33 @@ defmodule RealtimeWeb.OpenApiSchemas do
         max_concurrent_users: %Schema{
           type: :number,
           description: "Maximum connected concurrent clients"
+        },
+        max_channels_per_client: %Schema{
+          type: :number,
+          description: "Maximum channels per connected client"
+        },
+        max_events_per_second: %Schema{
+          type: :number,
+          description:
+            "Maximum number of events, or messages, that all connected clients are permitted to send"
+        },
+        max_joins_per_second: %Schema{
+          type: :number,
+          description: "Maximum number of channel joins permitted for all connected clients"
+        },
+        jwt_jwks: %Schema{
+          type: :object,
+          description: "JWKS for verifying JWTs",
+          properties: %{
+            keys: %Schema{
+              type: :array,
+              description: "Set of JWKs",
+              items: %Schema{
+                type: :object,
+                description: "JWK"
+              }
+            }
+          }
         },
         inserted_at: %Schema{type: :string, format: "date-time", description: "Insert timestamp"},
         extensions: %Schema{
@@ -176,6 +243,9 @@ defmodule RealtimeWeb.OpenApiSchemas do
         external_id: "tenant-1",
         name: "First Tenant",
         max_concurrent_users: 1000,
+        max_channels_per_client: 100,
+        max_events_per_second: 100,
+        max_joins_per_second: 100,
         inserted_at: "2023-01-01T00:00:00Z",
         extensions: [
           %{
@@ -187,7 +257,6 @@ defmodule RealtimeWeb.OpenApiSchemas do
               "db_port" => "5432",
               "db_user" => "postgres",
               "slot_name" => "supabase_realtime_replication_slot",
-              "ip_version" => 4,
               "db_password" => "password",
               "publication" => "supabase_realtime",
               "poll_interval_ms" => 100,
@@ -201,6 +270,70 @@ defmodule RealtimeWeb.OpenApiSchemas do
         ]
       }
     })
+  end
+
+  defmodule ChannelResponseValue do
+    @moduledoc false
+    require OpenApiSpex
+
+    OpenApiSpex.schema(%{
+      type: :object,
+      properties: %{
+        id: %Schema{type: :integer, description: "Channel ID"},
+        name: %Schema{type: :string, description: "Channel Name"},
+        inserted_at: %Schema{type: :string, format: "date-time", description: "Insert timestamp"},
+        updated_at: %Schema{type: :string, format: "date-time", description: "Update timestamp"}
+      },
+      required: [:id, :name, :inserted_at, :updated_at],
+      example: %{
+        id: 1,
+        name: "channel-1",
+        inserted_at: "2023-01-01T00:00:00Z",
+        updated_at: "2023-01-01T00:00:00Z"
+      }
+    })
+  end
+
+  defmodule TenantHealthResponseValue do
+    @moduledoc false
+    require OpenApiSpex
+
+    OpenApiSpex.schema(%{
+      type: :object,
+      properties: %{
+        healthy: %Schema{type: :boolean, description: "Tenant is healthy or not"},
+        db_connected: %Schema{
+          type: :boolean,
+          description: "Indicates if Realtime has an active connection to the tenant database"
+        },
+        connected_cluster: %Schema{
+          type: :integer,
+          description:
+            "The count of currently connected clients for a tenant on the Realtime cluster"
+        }
+      },
+      required: [
+        :external_id,
+        :jwt_secret
+      ],
+      example: %{
+        healthy: true,
+        db_connected: true,
+        connected_cluster: 10
+      }
+    })
+  end
+
+  defmodule TenantHealthResponse do
+    @moduledoc false
+    require OpenApiSpex
+
+    OpenApiSpex.schema(%{
+      type: :object,
+      properties: %{data: TenantHealthResponseValue}
+    })
+
+    def response(), do: {"Tenant Response", "application/json", __MODULE__}
   end
 
   defmodule TenantResponse do
@@ -222,6 +355,30 @@ defmodule RealtimeWeb.OpenApiSchemas do
     OpenApiSpex.schema(%{
       type: :object,
       properties: %{data: %Schema{type: :array, items: TenantResponseValue}}
+    })
+
+    def response(), do: {"Tenant List Response", "application/json", __MODULE__}
+  end
+
+  defmodule ChannelResponse do
+    @moduledoc false
+    require OpenApiSpex
+
+    OpenApiSpex.schema(%{
+      type: :object,
+      properties: %{data: ChannelResponseValue}
+    })
+
+    def response(), do: {"Tenant Response", "application/json", __MODULE__}
+  end
+
+  defmodule ChannelResponseList do
+    @moduledoc false
+    require OpenApiSpex
+
+    OpenApiSpex.schema(%{
+      type: :object,
+      properties: %{data: %Schema{type: :array, items: ChannelResponseValue}}
     })
 
     def response(), do: {"Tenant List Response", "application/json", __MODULE__}
@@ -253,6 +410,34 @@ defmodule RealtimeWeb.OpenApiSchemas do
     def response(), do: {"Not Found", "application/json", __MODULE__}
   end
 
+  defmodule ErrorResponse do
+    @moduledoc false
+    require OpenApiSpex
+
+    OpenApiSpex.schema(%{
+      type: :object,
+      properties: %{
+        error: %Schema{type: :string, default: "error message"}
+      }
+    })
+
+    def response(), do: {"Error", "application/json", __MODULE__}
+  end
+
+  defmodule UnauthorizedResponse do
+    @moduledoc false
+    require OpenApiSpex
+
+    OpenApiSpex.schema(%{
+      type: :object,
+      properties: %{
+        error: %Schema{type: :string, default: "unauthorized"}
+      }
+    })
+
+    def response(), do: {"Unauthorized", "application/json", __MODULE__}
+  end
+
   defmodule UnprocessableEntityResponse do
     @moduledoc false
     require OpenApiSpex
@@ -273,5 +458,27 @@ defmodule RealtimeWeb.OpenApiSchemas do
     })
 
     def response(), do: {"Unprocessable Entity", "application/json", __MODULE__}
+  end
+
+  defmodule TooManyRequestsResponse do
+    @moduledoc false
+    require OpenApiSpex
+
+    OpenApiSpex.schema(%{
+      type: :object,
+      properties: %{
+        error: %Schema{
+          type: :object,
+          properties: %{
+            messages: %Schema{
+              type: :array,
+              items: %Schema{type: :object}
+            }
+          }
+        }
+      }
+    })
+
+    def response(), do: {"Too Many Requests", "application/json", __MODULE__}
   end
 end

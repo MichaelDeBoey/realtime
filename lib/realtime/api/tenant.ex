@@ -5,7 +5,7 @@ defmodule Realtime.Api.Tenant do
   use Ecto.Schema
   import Ecto.Changeset
   alias Realtime.Api.Extensions
-  import Realtime.Helpers, only: [encrypt!: 2]
+  alias Realtime.Crypto
 
   @type t :: %__MODULE__{}
 
@@ -15,14 +15,18 @@ defmodule Realtime.Api.Tenant do
     field(:name, :string)
     field(:external_id, :string)
     field(:jwt_secret, :string)
+    field(:jwt_jwks, :map)
     field(:postgres_cdc_default, :string)
-    field(:max_concurrent_users, :integer, default: 200)
-    field(:max_events_per_second, :integer, default: 100)
-    field(:max_bytes_per_second, :integer, default: 100_000)
-    field(:max_channels_per_client, :integer, default: 100)
-    field(:max_joins_per_second, :integer, default: 500)
+    field(:max_concurrent_users, :integer)
+    field(:max_events_per_second, :integer)
+    field(:max_bytes_per_second, :integer)
+    field(:max_channels_per_client, :integer)
+    field(:max_joins_per_second, :integer)
+    field(:suspend, :boolean, default: false)
     field(:events_per_second_rolling, :float, virtual: true)
     field(:events_per_second_now, :integer, virtual: true)
+    field(:notify_private_alpha, :boolean, default: false)
+    field(:private_only, :boolean, default: false)
 
     has_many(:extensions, Realtime.Api.Extensions,
       foreign_key: :tenant_external_id,
@@ -57,19 +61,21 @@ defmodule Realtime.Api.Tenant do
         attrs
       end
 
-    ###
-
     tenant
     |> cast(attrs, [
       :name,
       :external_id,
       :jwt_secret,
+      :jwt_jwks,
       :max_concurrent_users,
       :max_events_per_second,
       :postgres_cdc_default,
       :max_bytes_per_second,
       :max_channels_per_client,
-      :max_joins_per_second
+      :max_joins_per_second,
+      :suspend,
+      :notify_private_alpha,
+      :private_only
     ])
     |> validate_required([
       :external_id,
@@ -77,13 +83,38 @@ defmodule Realtime.Api.Tenant do
     ])
     |> unique_constraint([:external_id])
     |> encrypt_jwt_secret()
+    |> maybe_set_default(:max_bytes_per_second, :tenant_max_bytes_per_second)
+    |> maybe_set_default(:max_channels_per_client, :tenant_max_channels_per_client)
+    |> maybe_set_default(:max_concurrent_users, :tenant_max_concurrent_users)
+    |> maybe_set_default(:max_events_per_second, :tenant_max_events_per_second)
+    |> maybe_set_default(:max_joins_per_second, :tenant_max_joins_per_second)
     |> cast_assoc(:extensions, with: &Extensions.changeset/2)
   end
 
+  def maybe_set_default(changeset, property, config_key) do
+    has_key? = Map.get(changeset.data, property) || Map.get(changeset.changes, property)
+
+    if has_key? do
+      changeset
+    else
+      put_change(changeset, property, Application.fetch_env!(:realtime, config_key))
+    end
+  end
+
   def encrypt_jwt_secret(changeset) do
-    update_change(changeset, :jwt_secret, fn jwt_secret ->
-      secure_key = Application.get_env(:realtime, :db_enc_key)
-      encrypt!(jwt_secret, secure_key)
-    end)
+    update_change(changeset, :jwt_secret, &Crypto.encrypt!/1)
+  end
+
+  def management_changeset(tenant, attrs) do
+    cast(tenant, attrs, [
+      :max_concurrent_users,
+      :max_events_per_second,
+      :max_bytes_per_second,
+      :max_channels_per_client,
+      :max_joins_per_second,
+      :suspend,
+      :notify_private_alpha,
+      :private_only
+    ])
   end
 end

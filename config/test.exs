@@ -10,7 +10,12 @@ for repo <- [
       Realtime.Repo.Replica.FRA,
       Realtime.Repo.Replica.IAD,
       Realtime.Repo.Replica.SIN,
-      Realtime.Repo.Replica.SJC
+      Realtime.Repo.Replica.SJC,
+      Realtime.Repo.Replica.Singapore,
+      Realtime.Repo.Replica.London,
+      Realtime.Repo.Replica.NorthVirginia,
+      Realtime.Repo.Replica.Oregon,
+      Realtime.Repo.Replica.SanJose
     ] do
   config :realtime, repo,
     username: "postgres",
@@ -32,11 +37,10 @@ config :realtime,
   jwt_claim_validators: System.get_env("JWT_CLAIM_VALIDATORS", "{}"),
   api_jwt_secret: System.get_env("API_JWT_SECRET"),
   metrics_jwt_secret: "test",
-  prom_poll_rate: 5_000,
-  fly_alloc_id: "123e4567-e89b-12d3-a456-426614174000"
+  prom_poll_rate: 5_000
 
 config :joken,
   current_time_adapter: RealtimeWeb.Joken.CurrentTime.Mock
 
-# Print only warnings and errors during test
-config :logger, level: :warn
+# Print only errors during test
+config :logger, level: :error
