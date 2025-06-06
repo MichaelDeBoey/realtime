@@ -276,7 +276,7 @@ defmodule Realtime.Tenants.ConnectTest do
       assert {:ok, _db_conn} = Connect.lookup_or_start_connection(tenant.external_id)
       assert Connect.ready?(tenant.external_id)
 
-      listen_pid = ReplicationConnection.whereis(tenant.external_id)
+      listen_pid = Listen.whereis(tenant.external_id)
       assert Process.alive?(listen_pid)
 
       pid = Connect.whereis(tenant.external_id)
@@ -410,6 +410,21 @@ defmodule Realtime.Tenants.ConnectTest do
 
       assert {:error, :tenant_db_too_many_connections} =
                Connect.lookup_or_start_connection(tenant.external_id)
+    end
+  end
+
+  describe "registers into local registry" do
+    test "successfully registers a process", %{tenant: %{external_id: external_id}} do
+      assert {:ok, _db_conn} = Connect.lookup_or_start_connection(external_id)
+      assert Registry.whereis_name({Realtime.Tenants.Connect.Registry, external_id})
+    end
+
+    test "successfully unregisters a process", %{tenant: %{external_id: external_id}} do
+      assert {:ok, _db_conn} = Connect.lookup_or_start_connection(external_id)
+      assert Registry.whereis_name({Realtime.Tenants.Connect.Registry, external_id})
+      Connect.shutdown(external_id)
+      Process.sleep(100)
+      assert :undefined = Registry.whereis_name({Realtime.Tenants.Connect.Registry, external_id})
     end
   end
 
