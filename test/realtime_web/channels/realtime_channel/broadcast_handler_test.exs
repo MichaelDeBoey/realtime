@@ -3,6 +3,7 @@ defmodule RealtimeWeb.RealtimeChannel.BroadcastHandlerTest do
   use Mimic
 
   import Generators
+  import ExUnit.CaptureLog
 
   alias Realtime.RateCounter
   alias Realtime.RateCounter
@@ -18,11 +19,11 @@ defmodule RealtimeWeb.RealtimeChannel.BroadcastHandlerTest do
 
   describe "call/2" do
     test "with write true policy, user is able to send message", %{topic: topic, tenant: tenant, db_conn: db_conn} do
-      socket = socket_fixture(tenant, topic, db_conn, %Policies{broadcast: %BroadcastPolicies{write: true}})
+      socket = socket_fixture(tenant, topic, %Policies{broadcast: %BroadcastPolicies{write: true}})
 
       for _ <- 1..100, reduce: socket do
         socket ->
-          {:reply, :ok, socket} = BroadcastHandler.handle(%{}, socket)
+          {:reply, :ok, socket} = BroadcastHandler.handle(%{}, db_conn, socket)
           socket
       end
 
@@ -38,11 +39,11 @@ defmodule RealtimeWeb.RealtimeChannel.BroadcastHandlerTest do
     end
 
     test "with write false policy, user is not able to send message", %{topic: topic, tenant: tenant, db_conn: db_conn} do
-      socket = socket_fixture(tenant, topic, db_conn, %Policies{broadcast: %BroadcastPolicies{write: false}})
+      socket = socket_fixture(tenant, topic, %Policies{broadcast: %BroadcastPolicies{write: false}})
 
       for _ <- 1..100, reduce: socket do
         socket ->
-          {:noreply, socket} = BroadcastHandler.handle(%{}, socket)
+          {:noreply, socket} = BroadcastHandler.handle(%{}, db_conn, socket)
           socket
       end
 
@@ -63,11 +64,11 @@ defmodule RealtimeWeb.RealtimeChannel.BroadcastHandlerTest do
       tenant: tenant,
       db_conn: db_conn
     } do
-      socket = socket_fixture(tenant, topic, db_conn)
+      socket = socket_fixture(tenant, topic)
 
       for _ <- 1..100, reduce: socket do
         socket ->
-          {:reply, :ok, socket} = BroadcastHandler.handle(%{}, socket)
+          {:reply, :ok, socket} = BroadcastHandler.handle(%{}, db_conn, socket)
           socket
       end
 
@@ -87,11 +88,11 @@ defmodule RealtimeWeb.RealtimeChannel.BroadcastHandlerTest do
       tenant: tenant,
       db_conn: db_conn
     } do
-      socket = socket_fixture(tenant, topic, db_conn)
+      socket = socket_fixture(tenant, topic)
 
       for _ <- 1..100, reduce: socket do
         socket ->
-          {:noreply, socket} = BroadcastHandler.handle(%{}, socket)
+          {:noreply, socket} = BroadcastHandler.handle(%{}, db_conn, socket)
           socket
       end
 
@@ -107,13 +108,12 @@ defmodule RealtimeWeb.RealtimeChannel.BroadcastHandlerTest do
     end
 
     @tag policies: [:authenticated_read_broadcast, :authenticated_write_broadcast]
-
     test "validation only runs once on nil and valid policies", %{
       topic: topic,
       tenant: tenant,
       db_conn: db_conn
     } do
-      socket = socket_fixture(tenant, topic, db_conn)
+      socket = socket_fixture(tenant, topic)
 
       expect(Authorization, :get_write_authorizations, 1, fn conn, db_conn, auth_context ->
         call_original(Authorization, :get_write_authorizations, [conn, db_conn, auth_context])
@@ -121,7 +121,7 @@ defmodule RealtimeWeb.RealtimeChannel.BroadcastHandlerTest do
 
       for _ <- 1..100, reduce: socket do
         socket ->
-          {:reply, :ok, socket} = BroadcastHandler.handle(%{}, socket)
+          {:reply, :ok, socket} = BroadcastHandler.handle(%{}, db_conn, socket)
           socket
       end
 
@@ -138,7 +138,7 @@ defmodule RealtimeWeb.RealtimeChannel.BroadcastHandlerTest do
       tenant: tenant,
       db_conn: db_conn
     } do
-      socket = socket_fixture(tenant, topic, db_conn)
+      socket = socket_fixture(tenant, topic)
 
       expect(Authorization, :get_write_authorizations, 1, fn conn, db_conn, auth_context ->
         call_original(Authorization, :get_write_authorizations, [conn, db_conn, auth_context])
@@ -146,7 +146,7 @@ defmodule RealtimeWeb.RealtimeChannel.BroadcastHandlerTest do
 
       for _ <- 1..100, reduce: socket do
         socket ->
-          {:noreply, socket} = BroadcastHandler.handle(%{}, socket)
+          {:noreply, socket} = BroadcastHandler.handle(%{}, db_conn, socket)
           socket
       end
 
@@ -163,11 +163,11 @@ defmodule RealtimeWeb.RealtimeChannel.BroadcastHandlerTest do
       tenant: tenant,
       db_conn: db_conn
     } do
-      socket = socket_fixture(tenant, topic, db_conn, %Policies{broadcast: %BroadcastPolicies{write: true}}, false)
+      socket = socket_fixture(tenant, topic, %Policies{broadcast: %BroadcastPolicies{write: true}}, false)
 
       for _ <- 1..100, reduce: socket do
         socket ->
-          {:noreply, socket} = BroadcastHandler.handle(%{}, socket)
+          {:noreply, socket} = BroadcastHandler.handle(%{}, db_conn, socket)
           socket
       end
 
@@ -180,11 +180,11 @@ defmodule RealtimeWeb.RealtimeChannel.BroadcastHandlerTest do
     end
 
     test "public channels are able to send messages", %{topic: topic, tenant: tenant, db_conn: db_conn} do
-      socket = socket_fixture(tenant, topic, db_conn, nil, false, false)
+      socket = socket_fixture(tenant, topic, nil, false, false)
 
       for _ <- 1..100, reduce: socket do
         socket ->
-          {:noreply, socket} = BroadcastHandler.handle(%{}, socket)
+          {:noreply, socket} = BroadcastHandler.handle(%{}, db_conn, socket)
           socket
       end
 
@@ -200,11 +200,11 @@ defmodule RealtimeWeb.RealtimeChannel.BroadcastHandlerTest do
     end
 
     test "public channels are able to send messages and ack", %{topic: topic, tenant: tenant, db_conn: db_conn} do
-      socket = socket_fixture(tenant, topic, db_conn, nil, true, false)
+      socket = socket_fixture(tenant, topic, nil, true, false)
 
       for _ <- 1..100, reduce: socket do
         socket ->
-          {:reply, :ok, socket} = BroadcastHandler.handle(%{}, socket)
+          {:reply, :ok, socket} = BroadcastHandler.handle(%{}, db_conn, socket)
           socket
       end
 
@@ -216,6 +216,32 @@ defmodule RealtimeWeb.RealtimeChannel.BroadcastHandlerTest do
       Process.sleep(1200)
       {:ok, %{avg: avg}} = RateCounter.get(Tenants.events_per_second_key(tenant))
       assert avg > 0.0
+    end
+
+    @tag policies: [:broken_write_presence]
+    test "handle failing rls policy", %{topic: topic, tenant: tenant, db_conn: db_conn} do
+      socket = socket_fixture(tenant, topic)
+
+      log =
+        capture_log(fn ->
+          for _ <- 1..100, reduce: socket do
+            socket ->
+              {:noreply, socket} = BroadcastHandler.handle(%{}, db_conn, socket)
+              socket
+          end
+
+          Process.sleep(1200)
+
+          for _ <- 1..100 do
+            topic = "realtime:#{topic}"
+            refute_received %Phoenix.Socket.Broadcast{topic: ^topic, event: "broadcast", payload: %{}}
+          end
+        end)
+
+      assert log =~ "RlsPolicyError"
+
+      {:ok, %{avg: avg}} = RateCounter.get(Tenants.events_per_second_key(tenant))
+      assert avg == 0.0
     end
   end
 
@@ -234,13 +260,12 @@ defmodule RealtimeWeb.RealtimeChannel.BroadcastHandlerTest do
     Endpoint.subscribe("realtime:#{topic}")
     if policies = context[:policies], do: create_rls_policies(db_conn, policies, %{topic: topic})
 
-    {:ok, tenant: tenant, db_conn: db_conn, topic: topic}
+    %{tenant: tenant, topic: topic, db_conn: db_conn}
   end
 
   defp socket_fixture(
          tenant,
          topic,
-         db_conn,
          policies \\ %Policies{broadcast: %BroadcastPolicies{write: nil, read: true}},
          ack_broadcast \\ true,
          private? \\ true
@@ -274,7 +299,7 @@ defmodule RealtimeWeb.RealtimeChannel.BroadcastHandlerTest do
         authorization_context: authorization_context,
         rate_counter: rate_counter,
         private?: private?,
-        db_conn: db_conn
+        tenant: tenant.external_id
       }
     }
   end
