@@ -29,9 +29,9 @@ defmodule RealtimeWeb.RealtimeChannel.PresenceHandlerTest do
       key = random_string()
 
       socket =
-        socket_fixture(tenant, topic, db_conn, key, %Policies{presence: %PresencePolicies{read: true, write: true}})
+        socket_fixture(tenant, topic, key, %Policies{presence: %PresencePolicies{read: true, write: true}})
 
-      PresenceHandler.handle(%{"event" => "track"}, socket)
+      PresenceHandler.handle(%{"event" => "track"}, db_conn, socket)
       topic = "realtime:#{topic}"
       assert_receive %Broadcast{topic: ^topic, event: "presence_diff", payload: %{joins: joins, leaves: %{}}}
       assert Map.has_key?(joins, key)
@@ -45,33 +45,28 @@ defmodule RealtimeWeb.RealtimeChannel.PresenceHandlerTest do
       key = random_string()
 
       socket =
-        socket_fixture(tenant, topic, db_conn, key, %Policies{presence: %PresencePolicies{read: true, write: true}})
+        socket_fixture(tenant, topic, key, %Policies{presence: %PresencePolicies{read: true, write: true}})
 
-      assert {:reply, :ok, socket} = PresenceHandler.handle(%{"event" => "track"}, socket)
+      assert {:reply, :ok, socket} = PresenceHandler.handle(%{"event" => "track"}, db_conn, socket)
       topic = "realtime:#{topic}"
       assert_receive %Broadcast{topic: ^topic, event: "presence_diff", payload: %{joins: joins, leaves: %{}}}
       assert Map.has_key?(joins, key)
 
-      assert {:reply, :ok, _socket} =
-               PresenceHandler.handle(%{"event" => "track", "payload" => %{"content" => random_string()}}, socket)
+      payload = %{"event" => "track", "payload" => %{"content" => random_string()}}
+      assert {:reply, :ok, _socket} = PresenceHandler.handle(payload, db_conn, socket)
 
       assert_receive %Broadcast{topic: ^topic, event: "presence_diff", payload: %{joins: joins, leaves: %{}}}
       assert Map.has_key?(joins, key)
       refute_receive :_
     end
 
-    test "with false policy and is public, user can track their presence and changes", %{
-      tenant: tenant,
-      topic: topic,
-      db_conn: db_conn
-    } do
+    test "with false policy and is public, user can track their presence and changes", %{tenant: tenant, topic: topic} do
       key = random_string()
 
       socket =
         socket_fixture(
           tenant,
           topic,
-          db_conn,
           key,
           %Policies{presence: %PresencePolicies{read: false, write: false}},
           false
@@ -87,14 +82,14 @@ defmodule RealtimeWeb.RealtimeChannel.PresenceHandlerTest do
       key = random_string()
 
       socket =
-        socket_fixture(tenant, topic, db_conn, key, %Policies{presence: %PresencePolicies{read: true, write: true}})
+        socket_fixture(tenant, topic, key, %Policies{presence: %PresencePolicies{read: true, write: true}})
 
-      assert {:reply, :ok, socket} = PresenceHandler.handle(%{"event" => "track"}, socket)
+      assert {:reply, :ok, socket} = PresenceHandler.handle(%{"event" => "track"}, db_conn, socket)
       topic = "realtime:#{topic}"
       assert_receive %Broadcast{topic: ^topic, event: "presence_diff", payload: %{joins: joins, leaves: %{}}}
       assert Map.has_key?(joins, key)
 
-      assert {:reply, :ok, _socket} = PresenceHandler.handle(%{"event" => "untrack"}, socket)
+      assert {:reply, :ok, _socket} = PresenceHandler.handle(%{"event" => "untrack"}, db_conn, socket)
       assert_receive %Broadcast{topic: ^topic, event: "presence_diff", payload: %{joins: %{}, leaves: leaves}}
       assert Map.has_key?(leaves, key)
     end
@@ -106,7 +101,7 @@ defmodule RealtimeWeb.RealtimeChannel.PresenceHandlerTest do
       end)
 
       key = random_string()
-      socket = socket_fixture(tenant, topic, db_conn, key)
+      socket = socket_fixture(tenant, topic, key)
       topic = "realtime:#{topic}"
 
       for _ <- 1..100, reduce: socket do
@@ -114,6 +109,7 @@ defmodule RealtimeWeb.RealtimeChannel.PresenceHandlerTest do
           assert {:reply, :ok, socket} =
                    PresenceHandler.handle(
                      %{"event" => "track", "payload" => %{"metadata" => random_string()}},
+                     db_conn,
                      socket
                    )
 
@@ -122,13 +118,42 @@ defmodule RealtimeWeb.RealtimeChannel.PresenceHandlerTest do
       end
     end
 
-    test "does not check write policies once on public channels", %{tenant: tenant, topic: topic, db_conn: db_conn} do
+    @tag policies: [:authenticated_read_broadcast_and_presence, :broken_write_presence]
+    test "handle failing rls policy", %{tenant: tenant, topic: topic, db_conn: db_conn} do
+      expect(Authorization, :get_write_authorizations, 1, fn conn, db_conn, auth_context ->
+        call_original(Authorization, :get_write_authorizations, [conn, db_conn, auth_context])
+      end)
+
+      key = random_string()
+      socket = socket_fixture(tenant, topic, key)
+      topic = "realtime:#{topic}"
+
+      log =
+        capture_log(fn ->
+          for _ <- 1..100, reduce: socket do
+            socket ->
+              assert {:reply, :error, socket} =
+                       PresenceHandler.handle(
+                         %{"event" => "track", "payload" => %{"metadata" => random_string()}},
+                         db_conn,
+                         socket
+                       )
+
+              refute_receive %Broadcast{topic: ^topic, event: "presence_diff"}
+              socket
+          end
+        end)
+
+      assert log =~ "RlsPolicyError"
+    end
+
+    test "does not check write policies once on public channels", %{tenant: tenant, topic: topic} do
       reject(&Authorization.get_write_authorizations/3)
 
       key = random_string()
 
       socket =
-        socket_fixture(tenant, topic, db_conn, key, %Policies{broadcast: %BroadcastPolicies{read: false}}, false)
+        socket_fixture(tenant, topic, key, %Policies{broadcast: %BroadcastPolicies{read: false}}, false)
 
       topic = "realtime:#{topic}"
 
@@ -150,7 +175,7 @@ defmodule RealtimeWeb.RealtimeChannel.PresenceHandlerTest do
 
       log =
         capture_log(fn ->
-          assert {:reply, :error, %Phoenix.Socket{}} = PresenceHandler.handle(%{"event" => "unknown"}, socket)
+          assert {:reply, :error, %Phoenix.Socket{}} = PresenceHandler.handle(%{"event" => "unknown"}, nil, socket)
         end)
 
       assert log =~ "UnknownPresenceEvent"
@@ -183,7 +208,6 @@ defmodule RealtimeWeb.RealtimeChannel.PresenceHandlerTest do
   defp socket_fixture(
          tenant,
          topic,
-         db_conn,
          presence_key,
          policies \\ %Policies{
            broadcast: %BroadcastPolicies{read: true},
@@ -224,7 +248,6 @@ defmodule RealtimeWeb.RealtimeChannel.PresenceHandlerTest do
         authorization_context: authorization_context,
         rate_counter: rate_counter,
         private?: private?,
-        db_conn: db_conn,
         presence_key: presence_key
       }
     }

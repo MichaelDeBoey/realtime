@@ -1,10 +1,13 @@
 defmodule RealtimeWeb.RealtimeChannelTest do
   # Can't run async true because under the hood Cachex is used and it doesn't see Ecto Sandbox
   use RealtimeWeb.ChannelCase, async: false
+  use Mimic
 
   import ExUnit.CaptureLog
 
   alias Phoenix.Socket
+  alias Realtime.Tenants.Authorization
+  alias Realtime.Tenants.Connect
   alias RealtimeWeb.UserSocket
 
   @default_limits %{
@@ -17,6 +20,31 @@ defmodule RealtimeWeb.RealtimeChannelTest do
   setup do
     tenant = Containers.checkout_tenant(run_migrations: true)
     {:ok, tenant: tenant}
+  end
+
+  describe "unexpected errors" do
+    test "unexpected error on Connect", %{tenant: tenant} do
+      jwt = Generators.generate_jwt_token(tenant)
+      {:ok, %Socket{} = socket} = connect(UserSocket, %{}, conn_opts(tenant, jwt))
+
+      expect(Connect, :lookup_or_start_connection, fn _ -> {:error, :unexpected_error} end)
+
+      assert capture_log(fn ->
+               assert {:error, %{reason: "Unknown Error on Channel"}} = subscribe_and_join(socket, "realtime:test", %{})
+             end) =~ "UnknownErrorOnChannel"
+    end
+
+    test "unexpected error while setting policies", %{tenant: tenant} do
+      jwt = Generators.generate_jwt_token(tenant)
+      {:ok, %Socket{} = socket} = connect(UserSocket, %{}, conn_opts(tenant, jwt))
+
+      expect(Authorization, :get_read_authorizations, fn _, _, _ -> {:error, :unexpected_error} end)
+
+      assert capture_log(fn ->
+               assert {:error, %{reason: "Realtime was unable to connect to the project database"}} =
+                        subscribe_and_join(socket, "realtime:test", %{"config" => %{"private" => true}})
+             end) =~ "UnableToSetPolicies"
+    end
   end
 
   describe "maximum number of connected clients per tenant" do
@@ -188,6 +216,19 @@ defmodule RealtimeWeb.RealtimeChannelTest do
       assert {:error, %{reason: "Database can't accept more connections, Realtime won't connect"}} =
                subscribe_and_join(socket, "realtime:test", %{})
     end
+  end
+
+  test "registers transport pid and channel pid per tenant", %{tenant: tenant} do
+    jwt = Generators.generate_jwt_token(tenant)
+    {:ok, %Socket{} = socket} = connect(UserSocket, %{"log_level" => "warning"}, conn_opts(tenant, jwt))
+
+    assert {:ok, _, %Socket{transport_pid: transport_pid_1} = socket} =
+             subscribe_and_join(socket, "realtime:#{random_string()}", %{})
+
+    assert {:ok, _, %Socket{transport_pid: ^transport_pid_1}} =
+             subscribe_and_join(socket, "realtime:#{random_string()}", %{})
+
+    assert [{_, ^transport_pid_1}] = Registry.lookup(RealtimeWeb.SocketDisconnect.Registry, tenant.external_id)
   end
 
   defp conn_opts(tenant, token, params \\ %{}) do

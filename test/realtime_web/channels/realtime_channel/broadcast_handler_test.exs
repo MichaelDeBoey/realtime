@@ -3,6 +3,7 @@ defmodule RealtimeWeb.RealtimeChannel.BroadcastHandlerTest do
   use Mimic
 
   import Generators
+  import ExUnit.CaptureLog
 
   alias Realtime.RateCounter
   alias Realtime.RateCounter
@@ -16,206 +17,239 @@ defmodule RealtimeWeb.RealtimeChannel.BroadcastHandlerTest do
 
   setup [:initiate_tenant]
 
-  describe "call/2" do
-    test "with write true policy, user is able to send message", %{topic: topic, tenant: tenant, db_conn: db_conn} do
-      socket = socket_fixture(tenant, topic, db_conn, %Policies{broadcast: %BroadcastPolicies{write: true}})
+  for adapter <- [:phoenix, :gen_rpc] do
+    describe "handle/3 #{adapter}" do
+      @describetag adapter: adapter
 
-      for _ <- 1..100, reduce: socket do
-        socket ->
-          {:reply, :ok, socket} = BroadcastHandler.handle(%{}, socket)
-          socket
+      test "with write true policy, user is able to send message", %{topic: topic, tenant: tenant, db_conn: db_conn} do
+        socket = socket_fixture(tenant, topic, %Policies{broadcast: %BroadcastPolicies{write: true}})
+
+        for _ <- 1..100, reduce: socket do
+          socket ->
+            {:reply, :ok, socket} = BroadcastHandler.handle(%{}, db_conn, socket)
+            socket
+        end
+
+        Process.sleep(1200)
+
+        for _ <- 1..100 do
+          topic = "realtime:#{topic}"
+          assert_received %Phoenix.Socket.Broadcast{topic: ^topic, event: "broadcast", payload: %{}}
+        end
+
+        {:ok, %{avg: avg}} = RateCounter.get(Tenants.events_per_second_key(tenant))
+        assert avg > 0
       end
 
-      Process.sleep(1200)
+      test "with write false policy, user is not able to send message", %{
+        topic: topic,
+        tenant: tenant,
+        db_conn: db_conn
+      } do
+        socket = socket_fixture(tenant, topic, %Policies{broadcast: %BroadcastPolicies{write: false}})
 
-      for _ <- 1..100 do
-        topic = "realtime:#{topic}"
-        assert_received %Phoenix.Socket.Broadcast{topic: ^topic, event: "broadcast", payload: %{}}
+        for _ <- 1..100, reduce: socket do
+          socket ->
+            {:noreply, socket} = BroadcastHandler.handle(%{}, db_conn, socket)
+            socket
+        end
+
+        Process.sleep(1200)
+
+        for _ <- 1..100 do
+          topic = "realtime:#{topic}"
+          refute_received %Phoenix.Socket.Broadcast{topic: ^topic, event: "broadcast", payload: %{}}
+        end
+
+        {:ok, %{avg: avg}} = RateCounter.get(Tenants.events_per_second_key(tenant))
+        assert avg == 0.0
       end
 
-      {:ok, %{avg: avg}} = RateCounter.get(Tenants.events_per_second_key(tenant))
-      assert avg > 0
-    end
+      @tag policies: [:authenticated_read_broadcast, :authenticated_write_broadcast]
+      test "with nil policy but valid user, is able to send message", %{
+        topic: topic,
+        tenant: tenant,
+        db_conn: db_conn
+      } do
+        socket = socket_fixture(tenant, topic)
 
-    test "with write false policy, user is not able to send message", %{topic: topic, tenant: tenant, db_conn: db_conn} do
-      socket = socket_fixture(tenant, topic, db_conn, %Policies{broadcast: %BroadcastPolicies{write: false}})
+        for _ <- 1..100, reduce: socket do
+          socket ->
+            {:reply, :ok, socket} = BroadcastHandler.handle(%{}, db_conn, socket)
+            socket
+        end
 
-      for _ <- 1..100, reduce: socket do
-        socket ->
-          {:noreply, socket} = BroadcastHandler.handle(%{}, socket)
-          socket
+        Process.sleep(1200)
+
+        for _ <- 1..100 do
+          topic = "realtime:#{topic}"
+          assert_received %Phoenix.Socket.Broadcast{topic: ^topic, event: "broadcast", payload: %{}}
+        end
+
+        {:ok, %{avg: avg}} = RateCounter.get(Tenants.events_per_second_key(tenant))
+        assert avg > 0.0
       end
 
-      Process.sleep(1200)
+      test "with nil policy and invalid user, is not able to send message", %{
+        topic: topic,
+        tenant: tenant,
+        db_conn: db_conn
+      } do
+        socket = socket_fixture(tenant, topic)
 
-      for _ <- 1..100 do
-        topic = "realtime:#{topic}"
-        refute_received %Phoenix.Socket.Broadcast{topic: ^topic, event: "broadcast", payload: %{}}
+        for _ <- 1..100, reduce: socket do
+          socket ->
+            {:noreply, socket} = BroadcastHandler.handle(%{}, db_conn, socket)
+            socket
+        end
+
+        Process.sleep(1200)
+
+        for _ <- 1..100 do
+          topic = "realtime:#{topic}"
+          refute_received %Phoenix.Socket.Broadcast{topic: ^topic, event: "broadcast", payload: %{}}
+        end
+
+        {:ok, %{avg: avg}} = RateCounter.get(Tenants.events_per_second_key(tenant))
+        assert avg == 0.0
       end
 
-      {:ok, %{avg: avg}} = RateCounter.get(Tenants.events_per_second_key(tenant))
-      assert avg == 0.0
-    end
+      @tag policies: [:authenticated_read_broadcast, :authenticated_write_broadcast]
+      test "validation only runs once on nil and valid policies", %{
+        topic: topic,
+        tenant: tenant,
+        db_conn: db_conn
+      } do
+        socket = socket_fixture(tenant, topic)
 
-    @tag policies: [:authenticated_read_broadcast, :authenticated_write_broadcast]
-    test "with nil policy but valid user, is able to send message", %{
-      topic: topic,
-      tenant: tenant,
-      db_conn: db_conn
-    } do
-      socket = socket_fixture(tenant, topic, db_conn)
+        expect(Authorization, :get_write_authorizations, 1, fn conn, db_conn, auth_context ->
+          call_original(Authorization, :get_write_authorizations, [conn, db_conn, auth_context])
+        end)
 
-      for _ <- 1..100, reduce: socket do
-        socket ->
-          {:reply, :ok, socket} = BroadcastHandler.handle(%{}, socket)
-          socket
+        for _ <- 1..100, reduce: socket do
+          socket ->
+            {:reply, :ok, socket} = BroadcastHandler.handle(%{}, db_conn, socket)
+            socket
+        end
+
+        Process.sleep(100)
+
+        for _ <- 1..100 do
+          topic = "realtime:#{topic}"
+          assert_received %Phoenix.Socket.Broadcast{topic: ^topic, event: "broadcast", payload: %{}}
+        end
       end
 
-      Process.sleep(1200)
+      test "validation only runs once on nil and blocking policies", %{
+        topic: topic,
+        tenant: tenant,
+        db_conn: db_conn
+      } do
+        socket = socket_fixture(tenant, topic)
 
-      for _ <- 1..100 do
-        topic = "realtime:#{topic}"
-        assert_received %Phoenix.Socket.Broadcast{topic: ^topic, event: "broadcast", payload: %{}}
+        expect(Authorization, :get_write_authorizations, 1, fn conn, db_conn, auth_context ->
+          call_original(Authorization, :get_write_authorizations, [conn, db_conn, auth_context])
+        end)
+
+        for _ <- 1..100, reduce: socket do
+          socket ->
+            {:noreply, socket} = BroadcastHandler.handle(%{}, db_conn, socket)
+            socket
+        end
+
+        Process.sleep(100)
+
+        for _ <- 1..100 do
+          topic = "realtime:#{topic}"
+          refute_received %Phoenix.Socket.Broadcast{topic: ^topic, event: "broadcast", payload: %{}}
+        end
       end
 
-      {:ok, %{avg: avg}} = RateCounter.get(Tenants.events_per_second_key(tenant))
-      assert avg > 0.0
-    end
+      test "no ack still sends message", %{
+        topic: topic,
+        tenant: tenant,
+        db_conn: db_conn
+      } do
+        socket = socket_fixture(tenant, topic, %Policies{broadcast: %BroadcastPolicies{write: true}}, false)
 
-    test "with nil policy and invalid user, is not able to send message", %{
-      topic: topic,
-      tenant: tenant,
-      db_conn: db_conn
-    } do
-      socket = socket_fixture(tenant, topic, db_conn)
+        for _ <- 1..100, reduce: socket do
+          socket ->
+            {:noreply, socket} = BroadcastHandler.handle(%{}, db_conn, socket)
+            socket
+        end
 
-      for _ <- 1..100, reduce: socket do
-        socket ->
-          {:noreply, socket} = BroadcastHandler.handle(%{}, socket)
-          socket
+        Process.sleep(100)
+
+        for _ <- 1..100 do
+          topic = "realtime:#{topic}"
+          assert_received %Phoenix.Socket.Broadcast{topic: ^topic, event: "broadcast", payload: %{}}
+        end
       end
 
-      Process.sleep(1200)
+      test "public channels are able to send messages", %{topic: topic, tenant: tenant, db_conn: db_conn} do
+        socket = socket_fixture(tenant, topic, nil, false, false)
 
-      for _ <- 1..100 do
-        topic = "realtime:#{topic}"
-        refute_received %Phoenix.Socket.Broadcast{topic: ^topic, event: "broadcast", payload: %{}}
+        for _ <- 1..100, reduce: socket do
+          socket ->
+            {:noreply, socket} = BroadcastHandler.handle(%{}, db_conn, socket)
+            socket
+        end
+
+        Process.sleep(1200)
+
+        for _ <- 1..100 do
+          topic = "realtime:#{topic}"
+          assert_received %Phoenix.Socket.Broadcast{topic: ^topic, event: "broadcast", payload: %{}}
+        end
+
+        {:ok, %{avg: avg}} = RateCounter.get(Tenants.events_per_second_key(tenant))
+        assert avg > 0.0
       end
 
-      {:ok, %{avg: avg}} = RateCounter.get(Tenants.events_per_second_key(tenant))
-      assert avg == 0.0
-    end
+      test "public channels are able to send messages and ack", %{topic: topic, tenant: tenant, db_conn: db_conn} do
+        socket = socket_fixture(tenant, topic, nil, true, false)
 
-    @tag policies: [:authenticated_read_broadcast, :authenticated_write_broadcast]
+        for _ <- 1..100, reduce: socket do
+          socket ->
+            {:reply, :ok, socket} = BroadcastHandler.handle(%{}, db_conn, socket)
+            socket
+        end
 
-    test "validation only runs once on nil and valid policies", %{
-      topic: topic,
-      tenant: tenant,
-      db_conn: db_conn
-    } do
-      socket = socket_fixture(tenant, topic, db_conn)
+        for _ <- 1..100 do
+          topic = "realtime:#{topic}"
+          assert_receive %Phoenix.Socket.Broadcast{topic: ^topic, event: "broadcast", payload: %{}}
+        end
 
-      expect(Authorization, :get_write_authorizations, 1, fn conn, db_conn, auth_context ->
-        call_original(Authorization, :get_write_authorizations, [conn, db_conn, auth_context])
-      end)
-
-      for _ <- 1..100, reduce: socket do
-        socket ->
-          {:reply, :ok, socket} = BroadcastHandler.handle(%{}, socket)
-          socket
+        Process.sleep(1200)
+        {:ok, %{avg: avg}} = RateCounter.get(Tenants.events_per_second_key(tenant))
+        assert avg > 0.0
       end
 
-      Process.sleep(100)
+      @tag policies: [:broken_write_presence]
+      test "handle failing rls policy", %{topic: topic, tenant: tenant, db_conn: db_conn} do
+        socket = socket_fixture(tenant, topic)
 
-      for _ <- 1..100 do
-        topic = "realtime:#{topic}"
-        assert_received %Phoenix.Socket.Broadcast{topic: ^topic, event: "broadcast", payload: %{}}
+        log =
+          capture_log(fn ->
+            for _ <- 1..100, reduce: socket do
+              socket ->
+                {:noreply, socket} = BroadcastHandler.handle(%{}, db_conn, socket)
+                socket
+            end
+
+            Process.sleep(1200)
+
+            for _ <- 1..100 do
+              topic = "realtime:#{topic}"
+              refute_received %Phoenix.Socket.Broadcast{topic: ^topic, event: "broadcast", payload: %{}}
+            end
+          end)
+
+        assert log =~ "RlsPolicyError"
+
+        {:ok, %{avg: avg}} = RateCounter.get(Tenants.events_per_second_key(tenant))
+        assert avg == 0.0
       end
-    end
-
-    test "validation only runs once on nil and blocking policies", %{
-      topic: topic,
-      tenant: tenant,
-      db_conn: db_conn
-    } do
-      socket = socket_fixture(tenant, topic, db_conn)
-
-      expect(Authorization, :get_write_authorizations, 1, fn conn, db_conn, auth_context ->
-        call_original(Authorization, :get_write_authorizations, [conn, db_conn, auth_context])
-      end)
-
-      for _ <- 1..100, reduce: socket do
-        socket ->
-          {:noreply, socket} = BroadcastHandler.handle(%{}, socket)
-          socket
-      end
-
-      Process.sleep(100)
-
-      for _ <- 1..100 do
-        topic = "realtime:#{topic}"
-        refute_received %Phoenix.Socket.Broadcast{topic: ^topic, event: "broadcast", payload: %{}}
-      end
-    end
-
-    test "no ack still sends message", %{
-      topic: topic,
-      tenant: tenant,
-      db_conn: db_conn
-    } do
-      socket = socket_fixture(tenant, topic, db_conn, %Policies{broadcast: %BroadcastPolicies{write: true}}, false)
-
-      for _ <- 1..100, reduce: socket do
-        socket ->
-          {:noreply, socket} = BroadcastHandler.handle(%{}, socket)
-          socket
-      end
-
-      Process.sleep(100)
-
-      for _ <- 1..100 do
-        topic = "realtime:#{topic}"
-        assert_received %Phoenix.Socket.Broadcast{topic: ^topic, event: "broadcast", payload: %{}}
-      end
-    end
-
-    test "public channels are able to send messages", %{topic: topic, tenant: tenant, db_conn: db_conn} do
-      socket = socket_fixture(tenant, topic, db_conn, nil, false, false)
-
-      for _ <- 1..100, reduce: socket do
-        socket ->
-          {:noreply, socket} = BroadcastHandler.handle(%{}, socket)
-          socket
-      end
-
-      Process.sleep(1200)
-
-      for _ <- 1..100 do
-        topic = "realtime:#{topic}"
-        assert_received %Phoenix.Socket.Broadcast{topic: ^topic, event: "broadcast", payload: %{}}
-      end
-
-      {:ok, %{avg: avg}} = RateCounter.get(Tenants.events_per_second_key(tenant))
-      assert avg > 0.0
-    end
-
-    test "public channels are able to send messages and ack", %{topic: topic, tenant: tenant, db_conn: db_conn} do
-      socket = socket_fixture(tenant, topic, db_conn, nil, true, false)
-
-      for _ <- 1..100, reduce: socket do
-        socket ->
-          {:reply, :ok, socket} = BroadcastHandler.handle(%{}, socket)
-          socket
-      end
-
-      for _ <- 1..100 do
-        topic = "realtime:#{topic}"
-        assert_received %Phoenix.Socket.Broadcast{topic: ^topic, event: "broadcast", payload: %{}}
-      end
-
-      Process.sleep(1200)
-      {:ok, %{avg: avg}} = RateCounter.get(Tenants.events_per_second_key(tenant))
-      assert avg > 0.0
     end
   end
 
@@ -224,6 +258,8 @@ defmodule RealtimeWeb.RealtimeChannel.BroadcastHandlerTest do
     start_supervised(Realtime.RateCounter.DynamicSupervisor)
 
     tenant = Containers.checkout_tenant(run_migrations: true)
+    {:ok, tenant} = Realtime.Api.update_tenant(tenant, %{broadcast_adapter: context.adapter})
+
     # Warm cache to avoid Cachex and Ecto.Sandbox ownership issues
     Cachex.put!(Realtime.Tenants.Cache, {{:get_tenant_by_external_id, 1}, [tenant.external_id]}, {:cached, tenant})
 
@@ -234,13 +270,12 @@ defmodule RealtimeWeb.RealtimeChannel.BroadcastHandlerTest do
     Endpoint.subscribe("realtime:#{topic}")
     if policies = context[:policies], do: create_rls_policies(db_conn, policies, %{topic: topic})
 
-    {:ok, tenant: tenant, db_conn: db_conn, topic: topic}
+    %{tenant: tenant, topic: topic, db_conn: db_conn}
   end
 
   defp socket_fixture(
          tenant,
          topic,
-         db_conn,
          policies \\ %Policies{broadcast: %BroadcastPolicies{write: nil, read: true}},
          ack_broadcast \\ true,
          private? \\ true
@@ -274,7 +309,7 @@ defmodule RealtimeWeb.RealtimeChannel.BroadcastHandlerTest do
         authorization_context: authorization_context,
         rate_counter: rate_counter,
         private?: private?,
-        db_conn: db_conn
+        tenant: tenant.external_id
       }
     }
   end

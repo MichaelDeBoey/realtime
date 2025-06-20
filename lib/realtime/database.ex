@@ -164,7 +164,7 @@ defmodule Realtime.Database do
     metadata = Keyword.put(metadata, :target, node(db_conn))
     args = [db_conn, func, opts, metadata]
 
-    case Rpc.enhanced_call(node(db_conn), __MODULE__, :transaction, args) do
+    case Rpc.enhanced_call(node(db_conn), __MODULE__, :transaction, args, metadata) do
       {:ok, value} -> {:ok, value}
       {:error, :rpc_error, error} -> {:error, error}
       {:error, error} -> {:error, error}
@@ -177,7 +177,7 @@ defmodule Realtime.Database do
     if telemetry do
       tenant_id = Keyword.get(opts, :tenant_id, nil)
       {latency, value} = :timer.tc(Postgrex, :transaction, [db_conn, func, opts], :millisecond)
-      Telemetry.execute(telemetry, %{latency: latency}, %{tenant_id: tenant_id})
+      Telemetry.execute(telemetry, %{latency: latency}, %{tenant: tenant_id})
       value
     else
       Postgrex.transaction(db_conn, func, opts)
@@ -205,7 +205,6 @@ defmodule Realtime.Database do
       ssl: ssl
     } = settings
 
-    Logger.metadata(application_name: application_name)
     metadata = Logger.metadata()
 
     [
@@ -221,7 +220,10 @@ defmodule Realtime.Database do
       backoff_type: backoff_type,
       ssl: ssl,
       configure: fn args ->
-        Logger.metadata(metadata)
+        metadata
+        |> Keyword.put(:application_name, application_name)
+        |> Logger.metadata()
+
         args
       end
     ]

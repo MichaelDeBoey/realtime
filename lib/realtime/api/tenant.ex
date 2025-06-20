@@ -27,6 +27,7 @@ defmodule Realtime.Api.Tenant do
     field(:events_per_second_now, :integer, virtual: true)
     field(:private_only, :boolean, default: false)
     field(:migrations_ran, :integer, default: 0)
+    field(:broadcast_adapter, Ecto.Enum, values: [:phoenix, :gen_rpc], default: :phoenix)
 
     has_many(:extensions, Realtime.Api.Extensions,
       foreign_key: :tenant_external_id,
@@ -41,12 +42,7 @@ defmodule Realtime.Api.Tenant do
   @doc false
   def changeset(tenant, attrs) do
     # TODO: remove after infra update
-    extension_key =
-      if attrs[:extensions] do
-        :extensions
-      else
-        "extensions"
-      end
+    extension_key = if attrs[:extensions], do: :extensions, else: "extensions"
 
     attrs =
       if attrs[extension_key] do
@@ -75,7 +71,8 @@ defmodule Realtime.Api.Tenant do
       :max_joins_per_second,
       :suspend,
       :private_only,
-      :migrations_ran
+      :migrations_ran,
+      :broadcast_adapter
     ])
     |> validate_required([
       :external_id,

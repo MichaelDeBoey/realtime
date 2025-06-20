@@ -10,13 +10,14 @@ defmodule Realtime.Rpc do
   """
   @spec call(atom(), atom(), atom(), any(), keyword()) :: any()
   def call(node, mod, func, args, opts \\ []) do
+    tenant_id = Keyword.get(opts, :tenant_id)
     timeout = Keyword.get(opts, :timeout, Application.get_env(:realtime, :rpc_timeout))
     {latency, response} = :timer.tc(fn -> :rpc.call(node, mod, func, args, timeout) end)
 
     Telemetry.execute(
       [:realtime, :rpc],
       %{latency: latency},
-      %{mod: mod, func: func, target_node: node, origin_node: node()}
+      %{mod: mod, func: func, target_node: node, origin_node: node(), mechanism: :rpc, tenant: tenant_id, success: nil}
     )
 
     response
@@ -29,51 +30,76 @@ defmodule Realtime.Rpc do
           {:ok, any()} | {:error, :rpc_error, term()} | {:error, term()}
   def enhanced_call(node, mod, func, args \\ [], opts \\ []) do
     timeout = Keyword.get(opts, :timeout, Application.get_env(:realtime, :rpc_timeout))
+    tenant_id = Keyword.get(opts, :tenant_id)
 
-    with {latency, response} <-
-           :timer.tc(fn -> :erpc.call(node, mod, func, args, timeout) end) do
-      case response do
-        {:ok, _} ->
-          Telemetry.execute(
-            [:realtime, :rpc],
-            %{latency: latency},
-            %{mod: mod, func: func, target_node: node, origin_node: node(), success: true}
-          )
+    try do
+      with {latency, response} <- :timer.tc(fn -> :erpc.call(node, mod, func, args, timeout) end) do
+        case response do
+          {:ok, _} ->
+            Telemetry.execute(
+              [:realtime, :rpc],
+              %{latency: latency},
+              %{
+                mod: mod,
+                func: func,
+                target_node: node,
+                origin_node: node(),
+                success: true,
+                tenant: tenant_id,
+                mechanism: :erpc
+              }
+            )
 
-          response
+            response
 
-        {:error, error} ->
-          Telemetry.execute(
-            [:realtime, :rpc],
-            %{latency: latency},
-            %{mod: mod, func: func, target_node: node, origin_node: node(), success: false}
-          )
+          error ->
+            Telemetry.execute(
+              [:realtime, :rpc],
+              %{latency: latency},
+              %{
+                mod: mod,
+                func: func,
+                target_node: node,
+                origin_node: node(),
+                success: false,
+                tenant: tenant_id,
+                mechanism: :erpc
+              }
+            )
 
-          {:error, error}
-      end
-    end
-  catch
-    _, reason ->
-      reason =
-        case reason do
-          {_, reason} -> reason
-          {_, reason, _} -> reason
+            error
         end
+      end
+    catch
+      _, reason ->
+        reason =
+          case reason do
+            {_, reason} -> reason
+            {_, reason, _} -> reason
+          end
 
-      Telemetry.execute(
-        [:realtime, :rpc],
-        %{latency: 0},
-        %{mod: mod, func: func, target_node: node, origin_node: node(), success: false}
-      )
+        Telemetry.execute(
+          [:realtime, :rpc],
+          %{latency: 0},
+          %{
+            mod: mod,
+            func: func,
+            target_node: node,
+            origin_node: node(),
+            success: false,
+            tenant: tenant_id,
+            mechanism: :erpc
+          }
+        )
 
-      log_error(
-        "ErrorOnRpcCall",
-        %{target: node, mod: mod, func: func, error: reason},
-        mod: mod,
-        func: func,
-        target: node
-      )
+        log_error(
+          "ErrorOnRpcCall",
+          %{target: node, mod: mod, func: func, error: reason},
+          project: tenant_id,
+          external_id: tenant_id
+        )
 
-      {:error, :rpc_error, reason}
+        {:error, :rpc_error, reason}
+    end
   end
 end

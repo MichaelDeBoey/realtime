@@ -12,6 +12,9 @@ port = System.get_env("DB_PORT", "5432")
 db_version = System.get_env("DB_IP_VERSION")
 slot_name_suffix = System.get_env("SLOT_NAME_SUFFIX")
 
+tenant_cache_expiration =
+  System.get_env("TENANT_CACHE_EXPIRATION_IN_MS", "30000") |> String.to_integer()
+
 migration_partition_slots =
   System.get_env("MIGRATION_PARTITION_SLOTS", "#{System.schedulers_online() * 2}") |> String.to_integer()
 
@@ -19,6 +22,27 @@ connect_partition_slots =
   System.get_env("CONNECT_PARTITION_SLOTS", "#{System.schedulers_online() * 2}") |> String.to_integer()
 
 connect_throttle_limit_per_second = System.get_env("CONNECT_THROTTLE_LIMIT_PER_SECOND", "1") |> String.to_integer()
+# defaults to 30 minutes
+metrics_cleaner_schedule_timer_in_ms =
+  System.get_env("METRICS_CLEANER_SCHEDULE_TIMER_IN_MS", "1800000") |> String.to_integer()
+
+tenant_max_bytes_per_second = System.get_env("TENANT_MAX_BYTES_PER_SECOND", "100000") |> String.to_integer()
+tenant_max_channels_per_client = System.get_env("TENANT_MAX_CHANNELS_PER_CLIENT", "100") |> String.to_integer()
+tenant_max_concurrent_users = System.get_env("TENANT_MAX_CONCURRENT_USERS", "200") |> String.to_integer()
+tenant_max_events_per_second = System.get_env("TENANT_MAX_EVENTS_PER_SECOND", "100") |> String.to_integer()
+tenant_max_joins_per_second = System.get_env("TENANT_MAX_JOINS_PER_SECOND", "100") |> String.to_integer()
+rpc_timeout = System.get_env("RPC_TIMEOUT", "30000") |> String.to_integer()
+max_gen_rpc_clients = System.get_env("MAX_GEN_RPC_CLIENTS", "5") |> String.to_integer()
+run_janitor? = System.get_env("RUN_JANITOR", "false") == "true"
+janitor_schedule_randomize = System.get_env("JANITOR_SCHEDULE_RANDOMIZE", "true") == "true"
+janitor_max_children = System.get_env("JANITOR_MAX_CHILDREN", "5") |> String.to_integer()
+janitor_chunk_size = System.get_env("JANITOR_CHUNK_SIZE", "10") |> String.to_integer()
+# defaults to 10 minutes
+janitor_run_after_in_ms = System.get_env("JANITOR_RUN_AFTER_IN_MS", "600000") |> String.to_integer()
+# defaults to 5 seconds
+janitor_children_timeout = System.get_env("JANITOR_CHILDREN_TIMEOUT", "5000") |> String.to_integer()
+# 4 hours by default
+janitor_schedule_timer = System.get_env("JANITOR_SCHEDULE_TIMER_IN_MS", "14400000") |> String.to_integer()
 
 if !(db_version in [nil, "ipv6", "ipv4"]),
   do: raise("Invalid IP version, please set either ipv6 or ipv4")
@@ -42,35 +66,30 @@ config :realtime,
   migration_partition_slots: migration_partition_slots,
   connect_partition_slots: connect_partition_slots,
   connect_throttle_limit_per_second: connect_throttle_limit_per_second,
-  tenant_max_bytes_per_second: System.get_env("TENANT_MAX_BYTES_PER_SECOND", "100000") |> String.to_integer(),
-  tenant_max_channels_per_client: System.get_env("TENANT_MAX_CHANNELS_PER_CLIENT", "100") |> String.to_integer(),
-  tenant_max_concurrent_users: System.get_env("TENANT_MAX_CONCURRENT_USERS", "200") |> String.to_integer(),
-  tenant_max_events_per_second: System.get_env("TENANT_MAX_EVENTS_PER_SECOND", "100") |> String.to_integer(),
-  tenant_max_joins_per_second: System.get_env("TENANT_MAX_JOINS_PER_SECOND", "100") |> String.to_integer(),
-  metrics_cleaner_schedule_timer_in_ms:
-    System.get_env("METRICS_CLEANER_SCHEDULE_TIMER_IN_MS", "1800000") |> String.to_integer(),
-  rpc_timeout: System.get_env("RPC_TIMEOUT", "30000") |> String.to_integer()
-
-run_janitor? = System.get_env("RUN_JANITOR", "false") == "true"
+  tenant_max_bytes_per_second: tenant_max_bytes_per_second,
+  tenant_max_channels_per_client: tenant_max_channels_per_client,
+  tenant_max_concurrent_users: tenant_max_concurrent_users,
+  tenant_max_events_per_second: tenant_max_events_per_second,
+  tenant_max_joins_per_second: tenant_max_joins_per_second,
+  metrics_cleaner_schedule_timer_in_ms: metrics_cleaner_schedule_timer_in_ms,
+  tenant_cache_expiration: tenant_cache_expiration,
+  rpc_timeout: rpc_timeout,
+  max_gen_rpc_clients: max_gen_rpc_clients
 
 if config_env() == :test || !run_janitor? do
   config :realtime, run_janitor: false
 else
   config :realtime,
     # disabled for now by default
-    run_janitor: System.get_env("RUN_JANITOR", "false") == "true",
-    janitor_schedule_randomize: System.get_env("JANITOR_SCHEDULE_RANDOMIZE", "true") == "true",
-    janitor_max_children: System.get_env("JANITOR_MAX_CHILDREN", "5") |> String.to_integer(),
-    janitor_chunk_size: System.get_env("JANITOR_CHUNK_SIZE", "10") |> String.to_integer(),
+    run_janitor: run_janitor?,
+    janitor_schedule_randomize: janitor_schedule_randomize,
+    janitor_max_children: janitor_max_children,
+    janitor_chunk_size: janitor_chunk_size,
     # defaults the runner to only start after 10 minutes
-    janitor_run_after_in_ms: System.get_env("JANITOR_RUN_AFTER_IN_MS", "600000") |> String.to_integer(),
-    janitor_children_timeout: System.get_env("JANITOR_CHILDREN_TIMEOUT", "5000") |> String.to_integer(),
+    janitor_run_after_in_ms: janitor_run_after_in_ms,
+    janitor_children_timeout: janitor_children_timeout,
     # defaults to 4 hours
-    janitor_schedule_timer:
-      :timer.hours(4)
-      |> to_string()
-      |> then(&System.get_env("JANITOR_SCHEDULE_TIMER_IN_MS", &1))
-      |> String.to_integer()
+    janitor_schedule_timer: janitor_schedule_timer
 end
 
 if config_env() == :prod do
@@ -109,6 +128,23 @@ if config_env() == :prod do
 end
 
 if config_env() != :test do
+  gen_rpc_socket_ip = System.get_env("GEN_RPC_SOCKET_IP", "0.0.0.0") |> to_charlist()
+
+  case :inet.parse_address(gen_rpc_socket_ip) do
+    {:ok, address} ->
+      config :gen_rpc,
+        tcp_server_port: System.get_env("GEN_RPC_TCP_SERVER_PORT", "5369") |> String.to_integer(),
+        tcp_client_port: System.get_env("GEN_RPC_TCP_CLIENT_PORT", "5369") |> String.to_integer(),
+        ipv6_only: System.get_env("GEN_RPC_IPV6_ONLY", "false") == "true",
+        socket_ip: address
+
+    _ ->
+      raise """
+      Environment variable GEN_RPC_SOCKET_IP is not a valid IP Address
+      Most likely it should be "0.0.0.0" (ipv4) or "::" (ipv6) to bind to all interfaces
+      """
+  end
+
   config :logger, level: System.get_env("LOG_LEVEL", "info") |> String.to_existing_atom()
 
   platform = if System.get_env("AWS_EXECUTION_ENV") == "AWS_ECS_FARGATE", do: :aws, else: :fly

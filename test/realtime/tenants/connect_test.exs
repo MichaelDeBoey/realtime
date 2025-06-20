@@ -88,9 +88,12 @@ defmodule Realtime.Tenants.ConnectTest do
       ]
 
       tenant = tenant_fixture(%{extensions: extensions})
+      external_id = tenant.external_id
 
-      assert {:error, :tenant_database_unavailable} =
-               Connect.lookup_or_start_connection(tenant.external_id)
+      assert capture_log(fn ->
+               assert {:error, :tenant_database_unavailable} =
+                        Connect.lookup_or_start_connection(tenant.external_id)
+             end) =~ "project=#{external_id} external_id=#{external_id} [error] UnableToConnectToTenantDatabase"
     end
 
     test "if tenant does not exist, returns error" do
@@ -276,7 +279,7 @@ defmodule Realtime.Tenants.ConnectTest do
       assert {:ok, _db_conn} = Connect.lookup_or_start_connection(tenant.external_id)
       assert Connect.ready?(tenant.external_id)
 
-      listen_pid = ReplicationConnection.whereis(tenant.external_id)
+      listen_pid = Listen.whereis(tenant.external_id)
       assert Process.alive?(listen_pid)
 
       pid = Connect.whereis(tenant.external_id)
@@ -332,36 +335,44 @@ defmodule Realtime.Tenants.ConnectTest do
 
     test "handle rpc errors gracefully" do
       expect(Realtime.Nodes, :get_node_for_tenant, fn _ -> {:ok, :potato@nohost} end)
-      assert {:error, :rpc_error, _} = Connect.lookup_or_start_connection("tenant")
+
+      assert capture_log(fn -> assert {:error, :rpc_error, _} = Connect.lookup_or_start_connection("tenant") end) =~
+               "project=tenant external_id=tenant [error] ErrorOnRpcCall"
     end
   end
 
   describe "connect/1" do
     test "respects backoff pipe", %{tenant: tenant} do
+      external_id = tenant.external_id
+
       log =
         capture_log(fn ->
           for _ <- 1..10 do
-            Connect.connect(tenant.external_id)
+            Connect.connect(external_id)
             Process.sleep(10)
-            Connect.shutdown(tenant.external_id)
+            Connect.shutdown(external_id)
           end
 
-          assert {:error, :tenant_create_backoff} = Connect.connect(tenant.external_id)
+          assert {:error, :tenant_create_backoff} = Connect.connect(external_id)
         end)
 
       assert log =~ "Too many connect attempts to tenant database"
+      assert log =~ "project=#{external_id} external_id=#{external_id} [warning] TooManyConnectAttempts"
     end
 
     test "after timer, is able to connect", %{tenant: tenant} do
+      external_id = tenant.external_id
+
       for _ <- 1..10 do
-        Connect.connect(tenant.external_id)
+        Connect.connect(external_id)
         Process.sleep(10)
-        Connect.shutdown(tenant.external_id)
+        Connect.shutdown(external_id)
       end
 
-      assert {:error, :tenant_create_backoff} = Connect.connect(tenant.external_id)
+      assert {:error, :tenant_create_backoff} = Connect.connect(external_id)
+
       Process.sleep(5000)
-      assert {:ok, _pid} = Connect.connect(tenant.external_id)
+      assert {:ok, _pid} = Connect.connect(external_id)
     end
   end
 
@@ -410,6 +421,21 @@ defmodule Realtime.Tenants.ConnectTest do
 
       assert {:error, :tenant_db_too_many_connections} =
                Connect.lookup_or_start_connection(tenant.external_id)
+    end
+  end
+
+  describe "registers into local registry" do
+    test "successfully registers a process", %{tenant: %{external_id: external_id}} do
+      assert {:ok, _db_conn} = Connect.lookup_or_start_connection(external_id)
+      assert Registry.whereis_name({Realtime.Tenants.Connect.Registry, external_id})
+    end
+
+    test "successfully unregisters a process", %{tenant: %{external_id: external_id}} do
+      assert {:ok, _db_conn} = Connect.lookup_or_start_connection(external_id)
+      assert Registry.whereis_name({Realtime.Tenants.Connect.Registry, external_id})
+      Connect.shutdown(external_id)
+      Process.sleep(100)
+      assert :undefined = Registry.whereis_name({Realtime.Tenants.Connect.Registry, external_id})
     end
   end
 

@@ -1,26 +1,25 @@
-defmodule Realtime.Tenants.AuthorizationTest do
-  use RealtimeWeb.ConnCase, async: true
-
-  require Phoenix.ChannelTest
+defmodule Realtime.Tenants.AuthorizationRemoteTest do
+  # async: false due to usage of Clustered
+  # Also using dev_tenant due to distributed test
+  use RealtimeWeb.ConnCase, async: false
+  use Mimic
 
   import ExUnit.CaptureLog
 
-  alias Realtime.Api.Message
+  require Phoenix.ChannelTest
+
   alias Realtime.Database
-  alias Realtime.Repo
   alias Realtime.Tenants.Authorization
   alias Realtime.Tenants.Authorization.Policies
   alias Realtime.Tenants.Authorization.Policies.BroadcastPolicies
   alias Realtime.Tenants.Authorization.Policies.PresencePolicies
+  alias Realtime.Tenants.Connect
 
   setup [:rls_context]
 
-  describe "get_authorizations/3" do
+  describe "get_authorizations" do
     @tag role: "authenticated",
-         policies: [
-           :authenticated_read_broadcast_and_presence,
-           :authenticated_write_broadcast_and_presence
-         ]
+         policies: [:authenticated_read_broadcast_and_presence, :authenticated_write_broadcast_and_presence]
     test "authenticated user has expected policies", context do
       {:ok, policies} =
         Authorization.get_read_authorizations(
@@ -28,6 +27,11 @@ defmodule Realtime.Tenants.AuthorizationTest do
           context.db_conn,
           context.authorization_context
         )
+
+      assert %Policies{
+               broadcast: %BroadcastPolicies{read: true, write: nil},
+               presence: %PresencePolicies{read: true, write: nil}
+             } == policies
 
       {:ok, policies} =
         Authorization.get_write_authorizations(
@@ -43,10 +47,7 @@ defmodule Realtime.Tenants.AuthorizationTest do
     end
 
     @tag role: "anon",
-         policies: [
-           :authenticated_read_broadcast_and_presence,
-           :authenticated_write_broadcast_and_presence
-         ]
+         policies: [:authenticated_read_broadcast_and_presence, :authenticated_write_broadcast_and_presence]
     test "anon user has no policies", context do
       {:ok, policies} =
         Authorization.get_read_authorizations(
@@ -54,6 +55,11 @@ defmodule Realtime.Tenants.AuthorizationTest do
           context.db_conn,
           context.authorization_context
         )
+
+      assert %Policies{
+               broadcast: %BroadcastPolicies{read: false, write: nil},
+               presence: %PresencePolicies{read: false, write: nil}
+             } == policies
 
       {:ok, policies} =
         Authorization.get_write_authorizations(
@@ -71,15 +77,17 @@ defmodule Realtime.Tenants.AuthorizationTest do
 
   describe "database error" do
     @tag role: "authenticated",
-         policies: [
-           :authenticated_read_broadcast_and_presence,
-           :authenticated_write_broadcast_and_presence
-         ],
+         policies: [:authenticated_read_broadcast_and_presence, :authenticated_write_broadcast_and_presence],
          timeout: :timer.minutes(1)
     test "handles small pool size", context do
       task =
         Task.async(fn ->
-          Postgrex.query!(context.db_conn, "SELECT pg_sleep(19)", [], timeout: :timer.seconds(20))
+          :erpc.call(node(context.db_conn), Postgrex, :query!, [
+            context.db_conn,
+            "SELECT pg_sleep(19)",
+            [],
+            [timeout: :timer.seconds(20)]
+          ])
         end)
 
       Process.sleep(100)
@@ -117,7 +125,7 @@ defmodule Realtime.Tenants.AuthorizationTest do
 
     @tag role: "authenticated",
          policies: [:broken_read_presence, :broken_write_presence]
-    test "broken RLS policy sets policies to false and shows error to user", context do
+    test "broken RLS policy returns error", context do
       assert {:error, :rls_policy_error, %Postgrex.Error{}} =
                Authorization.get_read_authorizations(
                  %Policies{},
@@ -155,86 +163,50 @@ defmodule Realtime.Tenants.AuthorizationTest do
     end
   end
 
-  describe "ensure database stays clean" do
-    @tag role: "authenticated",
-         policies: [
-           :authenticated_read_broadcast_and_presence,
-           :authenticated_write_broadcast_and_presence
-         ]
-    test "authenticated user has expected policies", context do
-      {:ok, _} =
-        Authorization.get_read_authorizations(
-          %Policies{},
-          context.db_conn,
-          context.authorization_context
-        )
+  describe "rpc error" do
+    @describetag role: "anon", policies: []
 
-      {:ok, _} =
-        Authorization.get_write_authorizations(
-          %Policies{},
-          context.db_conn,
-          context.authorization_context
-        )
+    test "get_read_authorizations", context do
+      # Grab a remote pid that will not exist in the near future. :erpc uses a new process to perform the call.
+      # Once it has returned the process is not alive anymore
+      db_conn = :erpc.call(context.node, :erlang, :self, [])
 
-      {:ok, db_conn} = Database.connect(context.tenant, "realtime_test")
-      assert {:ok, []} = Repo.all(db_conn, Message, Message)
+      assert capture_log(fn ->
+               {:error, {:noproc, {DBConnection.Holder, :checkout, [^db_conn, _]}}} =
+                 Authorization.get_read_authorizations(
+                   %Policies{},
+                   db_conn,
+                   context.authorization_context
+                 )
+             end) =~ "project=dev_tenant external_id=dev_tenant [error] ErrorOnRpcCall:"
+    end
+
+    test "get_write_authorizations", context do
+      # Grab a remote pid that will not exist in the near future. :erpc uses a new process to perform the call.
+      # Once it has returned the process is not alive anymore
+      db_conn = :erpc.call(context.node, :erlang, :self, [])
+
+      assert capture_log(fn ->
+               {:error, {:noproc, {DBConnection.Holder, :checkout, [^db_conn, _]}}} =
+                 Authorization.get_write_authorizations(
+                   %Policies{},
+                   db_conn,
+                   context.authorization_context
+                 )
+             end) =~ "project=dev_tenant external_id=dev_tenant [error] ErrorOnRpcCall:"
     end
   end
 
-  describe "telemetry" do
-    @tag role: "authenticated",
-         policies: [
-           :authenticated_read_broadcast_and_presence,
-           :authenticated_write_broadcast_and_presence
-         ]
+  defp rls_context(context) do
+    tenant = Realtime.Tenants.get_tenant_by_external_id("dev_tenant")
+    Connect.shutdown("dev_tenant")
+    # Waiting for :syn to unregister
+    Process.sleep(100)
 
-    test "sends telemetry event", context do
-      on_exit(fn -> :telemetry.detach(__MODULE__) end)
-
-      events = [
-        [:realtime, :tenants, :write_authorization_check],
-        [:realtime, :tenants, :read_authorization_check]
-      ]
-
-      :telemetry.attach_many(
-        __MODULE__,
-        events,
-        fn event, measurements, metadata, _config ->
-          send(self(), {:telemetry_event, event, measurements, metadata})
-        end,
-        %{}
-      )
-
-      {:ok, _} =
-        Authorization.get_read_authorizations(
-          %Policies{},
-          context.db_conn,
-          context.authorization_context
-        )
-
-      {:ok, _} =
-        Authorization.get_write_authorizations(
-          %Policies{},
-          context.db_conn,
-          context.authorization_context
-        )
-
-      external_id = context.authorization_context.tenant_id
-
-      assert_receive {:telemetry_event, [:realtime, :tenants, :read_authorization_check], %{latency: _},
-                      %{tenant: ^external_id}}
-
-      assert_receive {:telemetry_event, [:realtime, :tenants, :write_authorization_check], %{latency: _},
-                      %{tenant: ^external_id}}
-    end
-  end
-
-  def rls_context(context) do
-    tenant = Containers.checkout_tenant(run_migrations: true)
-    {:ok, db_conn} = Database.connect(tenant, "realtime_test", :stop)
+    {:ok, local_db_conn} = Database.connect(tenant, "realtime_test", :stop)
     topic = random_string()
 
-    create_rls_policies(db_conn, context.policies, %{topic: topic})
+    clean_table(local_db_conn, "realtime", "messages")
 
     claims = %{sub: random_string(), role: context.role, exp: Joken.current_time() + 1_000}
     signer = Joken.Signer.create("HS256", "secret")
@@ -251,14 +223,19 @@ defmodule Realtime.Tenants.AuthorizationTest do
         role: claims.role
       })
 
-    Realtime.Tenants.Migrations.create_partitions(db_conn)
+    Realtime.Tenants.Migrations.create_partitions(local_db_conn)
+    create_rls_policies(local_db_conn, context.policies, %{topic: topic})
 
-    on_exit(fn -> Process.exit(db_conn, :kill) end)
+    {:ok, node} = Clustered.start()
+    {:ok, db_conn} = :erpc.call(node, Connect, :connect, ["dev_tenant"])
+
+    assert node(db_conn) == node
 
     %{
       tenant: tenant,
       topic: topic,
       db_conn: db_conn,
+      node: node,
       authorization_context: authorization_context
     }
   end
