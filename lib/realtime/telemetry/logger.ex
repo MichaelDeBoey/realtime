@@ -42,6 +42,7 @@ defmodule Realtime.Telemetry.Logger do
   def handle_event([:realtime, :tenants, :migrations, :start], _measurements, metadata, _config) do
     Logger.info(
       "Applying migrations to #{metadata.hostname}",
+      external_id: metadata.external_id,
       project: metadata.external_id
     )
   end
@@ -49,16 +50,23 @@ defmodule Realtime.Telemetry.Logger do
   def handle_event([:realtime, :tenants, :migrations, :stop], measurements, metadata, _config) do
     duration_ms = System.convert_time_unit(measurements.duration, :native, :millisecond)
 
-    Logger.info(
-      "Finished applying #{metadata.migrations_executed} migrations for tenant #{metadata.external_id} in #{duration_ms}ms",
-      project: metadata.external_id
-    )
+    message =
+      case metadata.source do
+        :dump ->
+          "Finished loading the dump of #{metadata.migrations_executed} migrations for tenant #{metadata.external_id} in #{duration_ms}ms"
+
+        :migrator ->
+          "Finished applying #{metadata.migrations_executed} migrations for tenant #{metadata.external_id} in #{duration_ms}ms"
+      end
+
+    Logger.info(message, external_id: metadata.external_id, project: metadata.external_id)
   end
 
   def handle_event([:realtime, :tenants, :migrations, :exception], _measurements, metadata, _config) do
     log_error(
       "MigrationsFailedToRun",
       metadata.reason,
+      external_id: metadata.external_id,
       project: metadata.external_id,
       error_code: metadata.error_code
     )
@@ -68,6 +76,7 @@ defmodule Realtime.Telemetry.Logger do
     log_warning(
       "MigrationCountMismatch",
       "Reconciling migrations_ran for tenant #{metadata.external_id} cached=#{metadata.cached_migrations_ran} database=#{metadata.database_migrations_ran}",
+      external_id: metadata.external_id,
       project: metadata.external_id
     )
   end
@@ -76,6 +85,7 @@ defmodule Realtime.Telemetry.Logger do
     log_error(
       "MigrationCountMismatchReconcileFailed",
       metadata.reason,
+      external_id: metadata.external_id,
       project: metadata.external_id
     )
   end
