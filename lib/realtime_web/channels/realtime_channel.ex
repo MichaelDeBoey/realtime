@@ -265,6 +265,13 @@ defmodule RealtimeWeb.RealtimeChannel do
       {:error, :invalid_replay_channel} ->
         log_error(socket, "UnableToReplayMessages", "Replay is not allowed for public channels")
 
+      {:error, {:error_generating_signer, kid}} ->
+        log_error(
+          socket,
+          "JwtSignerError",
+          "Failed to generate JWT signer for key ID (kid) #{inspect(kid)}, check your JWT secret or JWKS configuration"
+        )
+
       {:error, :error_generating_signer} ->
         log_error(
           socket,
@@ -420,6 +427,13 @@ defmodule RealtimeWeb.RealtimeChannel do
 
       {:error, :expired_token, msg} ->
         shutdown_response(socket, msg)
+
+      {:error, {:error_generating_signer, kid}} ->
+        msg =
+          "Failed to generate JWT signer for key ID (kid) #{inspect(kid)}, check your JWT secret or JWKS configuration"
+
+        log_error(socket, "JwtSignerError", msg)
+        shutdown_response(socket, :error_generating_signer)
 
       {:error, error} ->
         shutdown_response(socket, Realtime.Logs.to_log(error))
@@ -597,6 +611,13 @@ defmodule RealtimeWeb.RealtimeChannel do
 
       {:error, :rpc_error, reason} ->
         shutdown_response(socket, "RPC call error: " <> inspect(reason))
+
+      {:error, {:error_generating_signer, kid}} ->
+        msg =
+          "Failed to generate JWT signer for key ID (kid) #{inspect(kid)}, check your JWT secret or JWKS configuration"
+
+        log_error(socket, "JwtSignerError", msg)
+        shutdown_response(socket, msg)
 
       {:error, error} ->
         shutdown_response(socket, inspect(error))
